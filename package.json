@@ -6,21 +6,53 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "worker": "tsx workers/src/index.ts",
+    "worker:live": "tsx workers/src/index.ts collector:live",
+    "worker:rest": "tsx workers/src/index.ts collector:rest",
+    "worker:underlying": "tsx workers/src/index.ts collector:underlying",
+    "worker:prediction": "tsx workers/src/index.ts collector:prediction",
+    "worker:normalize": "tsx workers/src/index.ts normalize",
+    "worker:backtest": "tsx workers/src/index.ts backtest",
+    "worker:strategy": "tsx workers/src/index.ts strategy",
+    "worker:risk": "tsx workers/src/index.ts risk",
+    "worker:paper": "tsx workers/src/index.ts paper",
+    "worker:live-exec": "tsx workers/src/index.ts live",
+    "worker:observe": "tsx workers/src/index.ts observe",
+    "db:up": "docker compose up -d",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "node scripts/migrate.mjs",
+    "db:seed": "prisma db seed",
+    "db:studio": "prisma studio"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@binance/w3w-prediction": "^2.1.1",
+    "@prisma/client": "^6.19.0",
+    "dotenv": "^17.4.2",
+    "ioredis": "^6.0.0",
     "next": "16.3.4",
+    "pino": "^10.3.1",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "ws": "^8.21.3",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "prisma": "^6.19.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "^4.23.13",
+    "typescript": "^5",
+    "vitest": "^4.1.11"
   }
 }

@@ -1,0 +1,9 @@
+aws_region   = "eu-central-1"
+name         = "botpol"
+web_image    = "ACCOUNT.dkr.ecr.eu-central-1.amazonaws.com/botpol-web:latest"
+worker_image = "ACCOUNT.dkr.ecr.eu-central-1.amazonaws.com/botpol-worker:latest"
+# Leave Binance values empty in git. Pass via TF_VAR_* or a local tfvars that is gitignored.
+binance_paper_api_key             = ""
+binance_paper_api_secret          = ""
+binance_prediction_wallet_address = ""
+certificate_arn                   = ""

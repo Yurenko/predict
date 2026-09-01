@@ -1,0 +1,584 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// Field names follow official Binance W3W Prediction types where they exist.
+// Live trading is never implied by schema defaults — mode is PAPER.
+// ---------------------------------------------------------------------------
+
+enum TradingMode {
+  PAPER
+  LIVE
+}
+
+enum DataSource {
+  WEBSOCKET
+  REST
+  WEBHOOK
+  BACKTEST
+  MANUAL
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+}
+
+enum OrderStatus {
+  PENDING
+  SUBMITTED
+  FILLED
+  PARTIALLY_FILLED
+  CANCELLED
+  FAILED
+  EXPIRED
+}
+
+enum SignalDirection {
+  BUY
+  SELL
+  EXIT
+  FLAT
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSED
+  PENDING_CLAIM
+  SETTLED
+}
+
+enum StrategyKind {
+  MEAN_REVERSION
+  UNDERLYING_MOMENTUM_LAG
+  FAIR_VALUE
+}
+
+enum RiskEventType {
+  MAX_POSITION_SIZE
+  MAX_EXPOSURE
+  MAX_DAILY_LOSS
+  MAX_DRAWDOWN
+  MAX_SLIPPAGE
+  MAX_PRICE_IMPACT
+  MIN_LIQUIDITY
+  MIN_TIME_TO_EXPIRY
+  STALE_DATA
+  API_ERROR
+  ABNORMAL_FILL
+  KILL_SWITCH
+  COOLDOWN
+}
+
+enum SystemEventLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+// ---------------------------------------------------------------------------
+// Markets (Binance hierarchy: Topic -> Market -> Outcome/token)
+// ---------------------------------------------------------------------------
+
+model MarketTopic {
+  id                String   @id @default(cuid())
+  venue             String   @default("binance")
+  marketTopicId     String   @unique
+  vendor            String?
+  chainId           String   @default("56")
+  slug              String?
+  title             String
+  question          String?
+  description       String?
+  imageUrl          String?
+  topicType         String?
+  chartType         String?
+  symbol            String?
+  l1Category        String?
+  l2Category        String?
+  collateral        String?
+  feeRateBps        Int?
+  slippageBps       Int?
+  isYieldBearing    Boolean?
+  tradeVolume       Decimal? @db.Decimal(38, 18)
+  liquidity         Decimal? @db.Decimal(38, 18)
+  participantCount  Int?
+  status            String?
+  startPrice        Decimal? @db.Decimal(38, 18)
+  endPrice          Decimal? @db.Decimal(38, 18)
+  priceFeedId       String?
+  priceFeedProvider String?
+  priceFeedSymbol   String?
+  publishedAt       DateTime?
+  startDate         DateTime?
+  endDate           DateTime?
+  rawPayload        Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  markets Market[]
+
+  @@index([symbol, status])
+  @@index([endDate])
+}
+
+model Market {
+  id               String   @id @default(cuid())
+  topicId          String
+  topic            MarketTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  venueMarketId    String   @unique
+  externalId       String?
+  title            String
+  question         String?
+  description      String?
+  conditionId      String?
+  status           String?
+  tradingStatus    String?
+  tradeVolume      Decimal? @db.Decimal(38, 18)
+  liquidity        Decimal? @db.Decimal(38, 18)
+  decimalPrecision Int?
+  rawPayload       Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  outcomes          MarketOutcome[]
+  snapshots         MarketSnapshot[]
+  quotes            PredictionQuote[]
+  signals           Signal[]
+  positions         Position[]
+  orders            Order[]
+  backtestTrades    BacktestTrade[]
+
+  @@index([topicId])
+  @@index([status, tradingStatus])
+}
+
+model MarketOutcome {
+  id           String   @id @default(cuid())
+  marketId     String
+  market       Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  tokenId      String   @unique
+  name         String
+  outcomeIndex Int?
+  lastChance   Decimal? @db.Decimal(18, 10)
+  lastPrice    Decimal? @db.Decimal(38, 18)
+  rawPayload   Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  snapshots MarketSnapshot[]
+  quotes    PredictionQuote[]
+  signals   Signal[]
+  positions Position[]
+  orders    Order[]
+
+  @@index([marketId])
+}
+
+model MarketSnapshot {
+  id               String     @id @default(cuid())
+  marketId         String
+  market           Market     @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  outcomeId        String?
+  outcome          MarketOutcome? @relation(fields: [outcomeId], references: [id], onDelete: SetNull)
+  observedAt       DateTime
+  ingestedAt       DateTime   @default(now())
+  source           DataSource
+  /// Last trade price is historical, never treated as executable.
+  lastPrice        Decimal?   @db.Decimal(38, 18)
+  chance           Decimal?   @db.Decimal(18, 10)
+  bestBid          Decimal?   @db.Decimal(38, 18)
+  bestAsk          Decimal?   @db.Decimal(38, 18)
+  midPrice         Decimal?   @db.Decimal(38, 18)
+  spread           Decimal?   @db.Decimal(38, 18)
+  liquidity        Decimal?   @db.Decimal(38, 18)
+  volume           Decimal?   @db.Decimal(38, 18)
+  bidDepth         Decimal?   @db.Decimal(38, 18)
+  askDepth         Decimal?   @db.Decimal(38, 18)
+  sequence         BigInt?
+  timeToExpirySec  Int?
+  rawPayload       Json?
+  createdAt        DateTime   @default(now())
+
+  @@index([marketId, observedAt])
+  @@index([outcomeId, observedAt])
+  @@index([observedAt])
+}
+
+model UnderlyingSnapshot {
+  id         String     @id @default(cuid())
+  symbol     String
+  observedAt DateTime
+  ingestedAt DateTime   @default(now())
+  source     DataSource
+  price      Decimal    @db.Decimal(38, 18)
+  bid        Decimal?   @db.Decimal(38, 18)
+  ask        Decimal?   @db.Decimal(38, 18)
+  volume     Decimal?   @db.Decimal(38, 18)
+  sequence   BigInt?
+  rawPayload Json?
+  createdAt  DateTime   @default(now())
+
+  @@index([symbol, observedAt])
+  @@index([observedAt])
+}
+
+/// Full quote from get-quote. Fees/slippage/impact come from the quote, never hardcoded.
+model PredictionQuote {
+  id              String    @id @default(cuid())
+  quoteId         String    @unique
+  marketId        String?
+  market          Market?   @relation(fields: [marketId], references: [id], onDelete: SetNull)
+  outcomeId       String?
+  outcome         MarketOutcome? @relation(fields: [outcomeId], references: [id], onDelete: SetNull)
+  tokenId         String
+  side            OrderSide
+  orderType       OrderType
+  chainId         String?
+  vendor          String?
+  marketTitle     String?
+  marketExtId     String?
+  chance          Decimal?  @db.Decimal(18, 10)
+  amountIn        Decimal   @db.Decimal(38, 18)
+  amountOut       Decimal   @db.Decimal(38, 18)
+  isMinAmountOut  Boolean?
+  averagePrice    Decimal?  @db.Decimal(38, 18)
+  lastPrice       Decimal?  @db.Decimal(38, 18)
+  priceImpact     Decimal?  @db.Decimal(38, 18)
+  feeAmount       Decimal?  @db.Decimal(38, 18)
+  feeRateBps      Int?
+  feeDiscountBps  Int?
+  slippageBps     Int?
+  minReceive      Decimal?  @db.Decimal(38, 18)
+  priceLimit      Decimal?  @db.Decimal(38, 18)
+  expireAt        DateTime?
+  quotedAt        DateTime  @default(now())
+  rawPayload      Json?
+  createdAt       DateTime  @default(now())
+
+  orders Order[]
+
+  @@index([tokenId, quotedAt])
+  @@index([expireAt])
+}
+
+model RawIngestEvent {
+  id          String     @id @default(cuid())
+  source      DataSource
+  channel     String
+  observedAt  DateTime
+  ingestedAt  DateTime   @default(now())
+  payloadHash String
+  payload     Json
+  createdAt   DateTime   @default(now())
+
+  @@unique([channel, payloadHash, observedAt])
+  @@index([channel, observedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Strategies & signals
+// ---------------------------------------------------------------------------
+
+model Strategy {
+  id          String       @id @default(cuid())
+  slug        String       @unique
+  kind        StrategyKind
+  name        String
+  version     String
+  enabled     Boolean      @default(false)
+  parameters  Json
+  description String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  signals        Signal[]
+  backtestRuns   BacktestRun[]
+  positions      Position[]
+}
+
+model Signal {
+  id                     String          @id @default(cuid())
+  strategyId             String
+  strategy               Strategy        @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  marketId               String
+  market                 Market          @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  outcomeId              String?
+  outcome                MarketOutcome?  @relation(fields: [outcomeId], references: [id], onDelete: SetNull)
+  timestamp              DateTime
+  direction              SignalDirection
+  marketProbability      Decimal         @db.Decimal(18, 10)
+  fairProbability        Decimal?        @db.Decimal(18, 10)
+  grossEdge              Decimal         @db.Decimal(18, 10)
+  estimatedFees          Decimal         @db.Decimal(38, 18)
+  estimatedSlippage      Decimal         @db.Decimal(38, 18)
+  estimatedPriceImpact   Decimal         @db.Decimal(38, 18)
+  netEdge                Decimal         @db.Decimal(18, 10)
+  confidence             Decimal         @db.Decimal(18, 10)
+  reason                 String
+  riskChecks             Json
+  accepted               Boolean         @default(false)
+  createdAt              DateTime        @default(now())
+
+  positions Position[]
+  orders    Order[]
+
+  @@index([strategyId, timestamp])
+  @@index([marketId, timestamp])
+}
+
+// ---------------------------------------------------------------------------
+// Backtests
+// ---------------------------------------------------------------------------
+
+model BacktestRun {
+  id              String    @id @default(cuid())
+  strategyId      String
+  strategy        Strategy  @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  name            String
+  parameters      Json
+  trainFrom       DateTime?
+  trainTo         DateTime?
+  validationFrom  DateTime?
+  validationTo    DateTime?
+  testFrom        DateTime
+  testTo          DateTime
+  walkForward     Boolean   @default(false)
+  status          String    @default("PENDING")
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  error           String?
+  netPnl          Decimal?  @db.Decimal(38, 18)
+  grossPnl        Decimal?  @db.Decimal(38, 18)
+  fees            Decimal?  @db.Decimal(38, 18)
+  maxDrawdown     Decimal?  @db.Decimal(18, 10)
+  winRate         Decimal?  @db.Decimal(18, 10)
+  profitFactor    Decimal?  @db.Decimal(18, 10)
+  expectancy      Decimal?  @db.Decimal(38, 18)
+  sharpe          Decimal?  @db.Decimal(18, 10)
+  sortino         Decimal?  @db.Decimal(18, 10)
+  metrics         Json?
+  equityCurve     Json?
+  createdAt       DateTime  @default(now())
+
+  trades BacktestTrade[]
+
+  @@index([strategyId, createdAt])
+}
+
+model BacktestTrade {
+  id             String      @id @default(cuid())
+  runId          String
+  run            BacktestRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  marketId       String?
+  market         Market?     @relation(fields: [marketId], references: [id], onDelete: SetNull)
+  openedAt       DateTime
+  closedAt       DateTime?
+  side           OrderSide
+  direction      SignalDirection
+  entryPrice     Decimal     @db.Decimal(38, 18)
+  exitPrice      Decimal?    @db.Decimal(38, 18)
+  size           Decimal     @db.Decimal(38, 18)
+  grossPnl       Decimal?    @db.Decimal(38, 18)
+  fees           Decimal     @db.Decimal(38, 18)
+  slippage       Decimal     @db.Decimal(38, 18)
+  priceImpact    Decimal     @db.Decimal(38, 18)
+  netPnl         Decimal?    @db.Decimal(38, 18)
+  reason         String?
+  createdAt      DateTime    @default(now())
+
+  @@index([runId, openedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Positions, orders, execution, fees
+// ---------------------------------------------------------------------------
+
+model Position {
+  id               String         @id @default(cuid())
+  mode             TradingMode    @default(PAPER)
+  venuePositionId  String?
+  strategyId       String?
+  strategy         Strategy?      @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  marketId         String
+  market           Market         @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  outcomeId        String?
+  outcome          MarketOutcome? @relation(fields: [outcomeId], references: [id], onDelete: SetNull)
+  signalId         String?
+  signal           Signal?        @relation(fields: [signalId], references: [id], onDelete: SetNull)
+  tokenId          String
+  side             OrderSide
+  status           PositionStatus @default(OPEN)
+  shares           Decimal        @db.Decimal(38, 18)
+  avgPrice         Decimal        @db.Decimal(38, 18)
+  totalCost        Decimal        @db.Decimal(38, 18)
+  realizedPnl      Decimal        @default(0) @db.Decimal(38, 18)
+  unrealizedPnl    Decimal        @default(0) @db.Decimal(38, 18)
+  feesPaid         Decimal        @default(0) @db.Decimal(38, 18)
+  slippagePaid     Decimal        @default(0) @db.Decimal(38, 18)
+  priceImpactPaid  Decimal        @default(0) @db.Decimal(38, 18)
+  networkCostPaid  Decimal        @default(0) @db.Decimal(38, 18)
+  openedAt         DateTime       @default(now())
+  closedAt         DateTime?
+  rawPayload       Json?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  orders      Order[]
+  executions  Execution[]
+  fees        Fee[]
+
+  @@index([mode, status])
+  @@index([marketId, status])
+  @@unique([mode, venuePositionId])
+}
+
+model Order {
+  id               String         @id @default(cuid())
+  mode             TradingMode    @default(PAPER)
+  clientOrderId    String         @unique
+  venueOrderId     String?
+  vendorOrderId    String?
+  quoteId          String?
+  quote            PredictionQuote? @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  positionId       String?
+  position         Position?      @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  signalId         String?
+  signal           Signal?        @relation(fields: [signalId], references: [id], onDelete: SetNull)
+  marketId         String
+  market           Market         @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  outcomeId        String?
+  outcome          MarketOutcome? @relation(fields: [outcomeId], references: [id], onDelete: SetNull)
+  tokenId          String
+  side             OrderSide
+  orderType        OrderType
+  status           OrderStatus    @default(PENDING)
+  requestedAmount  Decimal        @db.Decimal(38, 18)
+  priceLimit       Decimal?       @db.Decimal(38, 18)
+  slippageBps      Int?
+  filledUsdtAmount Decimal?       @db.Decimal(38, 18)
+  filledShareQty   Decimal?       @db.Decimal(38, 18)
+  fillPercentage   Decimal?       @db.Decimal(18, 10)
+  averagePrice     Decimal?       @db.Decimal(38, 18)
+  marketProviderFee Decimal?      @db.Decimal(38, 18)
+  networkFee       Decimal?       @db.Decimal(38, 18)
+  idempotencyKey   String         @unique
+  submittedAt      DateTime?
+  terminalAt       DateTime?
+  rawPayload       Json?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  executions Execution[]
+  fees       Fee[]
+
+  @@index([mode, status])
+  @@index([venueOrderId])
+  @@index([marketId, createdAt])
+}
+
+model Execution {
+  id            String    @id @default(cuid())
+  mode          TradingMode @default(PAPER)
+  orderId       String
+  order         Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  positionId    String?
+  position      Position? @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  executedAt    DateTime
+  price         Decimal   @db.Decimal(38, 18)
+  shares        Decimal   @db.Decimal(38, 18)
+  usdtAmount    Decimal   @db.Decimal(38, 18)
+  isPartial     Boolean   @default(false)
+  latencyMs     Int?
+  rawPayload    Json?
+  createdAt     DateTime  @default(now())
+
+  @@index([orderId, executedAt])
+}
+
+model Fee {
+  id          String    @id @default(cuid())
+  orderId     String?
+  order       Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  positionId  String?
+  position    Position? @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  kind        String
+  amount      Decimal   @db.Decimal(38, 18)
+  currency    String    @default("USDT")
+  bps         Int?
+  observedAt  DateTime  @default(now())
+  rawPayload  Json?
+  createdAt   DateTime  @default(now())
+
+  @@index([orderId])
+  @@index([positionId])
+}
+
+// ---------------------------------------------------------------------------
+// Risk & system
+// ---------------------------------------------------------------------------
+
+model RiskEvent {
+  id          String        @id @default(cuid())
+  type        RiskEventType
+  severity    SystemEventLevel
+  message     String
+  marketId    String?
+  strategyId  String?
+  orderId     String?
+  details     Json?
+  createdAt   DateTime      @default(now())
+
+  @@index([type, createdAt])
+}
+
+model SystemEvent {
+  id            String           @id @default(cuid())
+  level         SystemEventLevel
+  component     String
+  message       String
+  correlationId String?
+  strategyId    String?
+  marketId      String?
+  orderId       String?
+  details       Json?
+  createdAt     DateTime         @default(now())
+
+  @@index([component, createdAt])
+  @@index([correlationId])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model RiskState {
+  id                 String      @id @default("global")
+  mode               TradingMode @default(PAPER)
+  killSwitch         Boolean     @default(false)
+  killSwitchReason   String?
+  dailyPnl           Decimal     @default(0) @db.Decimal(38, 18)
+  dailyLossDate      DateTime?
+  peakEquity         Decimal     @default(0) @db.Decimal(38, 18)
+  currentDrawdown    Decimal     @default(0) @db.Decimal(18, 10)
+  consecutiveLosses  Int         @default(0)
+  cooldownUntil      DateTime?
+  staleData          Boolean     @default(false)
+  apiErrorBreaker    Boolean     @default(false)
+  updatedAt          DateTime    @updatedAt
+}

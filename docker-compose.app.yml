@@ -1,0 +1,59 @@
+# Prod-like web + workers against local Postgres/Redis.
+# docker compose -f docker-compose.yml -f docker-compose.app.yml up --build
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://botpol:botpol@postgres:5432/botpol?schema=public
+      REDIS_URL: redis://redis:6379
+      LIVE_TRADING_ENABLED: "false"
+      TRADING_MODE: PAPER
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker-live:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["npx", "tsx", "workers/src/index.ts", "collector:live"]
+    environment:
+      DATABASE_URL: postgresql://botpol:botpol@postgres:5432/botpol?schema=public
+      REDIS_URL: redis://redis:6379
+      LIVE_TRADING_ENABLED: "false"
+      TRADING_MODE: PAPER
+      RAW_DATA_DIR: /data/raw
+    volumes:
+      - raw_data:/data/raw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker-paper:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["npx", "tsx", "workers/src/index.ts", "paper"]
+    environment:
+      DATABASE_URL: postgresql://botpol:botpol@postgres:5432/botpol?schema=public
+      REDIS_URL: redis://redis:6379
+      LIVE_TRADING_ENABLED: "false"
+      TRADING_MODE: PAPER
+      RAW_DATA_DIR: /data/raw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  raw_data:

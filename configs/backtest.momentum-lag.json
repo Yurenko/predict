@@ -1,0 +1,26 @@
+{
+  "name": "underlying-momentum-lag",
+  "strategy": "underlying-momentum-lag",
+  "trainFrom": "2026-07-01T00:00:00.000Z",
+  "trainTo": "2026-07-21T00:00:00.000Z",
+  "validationFrom": "2026-07-21T00:00:00.000Z",
+  "validationTo": "2026-07-28T00:00:00.000Z",
+  "testFrom": "2026-07-28T00:00:00.000Z",
+  "testTo": "2026-08-11T00:00:00.000Z",
+  "walkForward": true,
+  "parameters": {
+    "returns": ["1m", "5m", "15m"],
+    "minNetEdge": 0.02,
+    "minTimeToExpirySec": 60,
+    "lookbackMinutes": 15,
+    "minUnderlyingMove": 0.001,
+    "returnScale": 0.01
+  },
+  "costs": {
+    "useQuoteFees": true,
+    "fallbackFeeRateBps": null,
+    "simulateSlippage": true,
+    "simulatePriceImpact": true,
+    "allowPartialFills": true
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "engine-smoke-spread-only",
+  "strategy": "engine-smoke",
+  "testFrom": "2026-07-28T00:00:00.000Z",
+  "testTo": "2026-08-11T00:00:00.000Z",
+  "walkForward": false,
+  "parameters": {
+    "minNetEdge": 0.02,
+    "safetyMargin": 0.005
+  },
+  "costs": {
+    "useQuoteFees": true,
+    "fallbackFeeRateBps": 0,
+    "simulateSlippage": true,
+    "simulatePriceImpact": true,
+    "allowPartialFills": true,
+    "networkCostUsdt": 0
+  }
+}

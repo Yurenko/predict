@@ -1,36 +1,119 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Binance Prediction Market Research Platform
 
-## Getting Started
+Research-first платформа для Binance Wallet Prediction Markets: збір даних, backtest і paper trading. Live execution вимкнений за замовчуванням і не вмикається, поки не пройдуть risk gates.
 
-First, run the development server:
+Жодна стратегія не вважається прибутковою, доки це не підтвердить walk-forward / out-of-sample backtest з реальними комісіями, slippage і price impact.
+
+## Поточний етап
+
+**Phase 11 — Optional live execution**
+
+Окремий worker `npm run worker:live-exec` може викликати офіційний `placeOrder` (`/sapi/v1/w3w/wallet/prediction/trade/place-order-bundle`) лише коли **обидва** прапорці `LIVE_TRADING_ENABLED=true` і `TRADING_MODE=LIVE`. Paper worker як і раніше **ніколи** не шле ордер. Docker/ECS лишають live вимкненим. З UI live не вмикається.
+
+Далі: paper + walk-forward, перш ніж вмикати прапорці.
+
+Повний план: [docs/architecture.md](docs/architecture.md).
+
+## Вимоги
+
+- Node.js 22.12+
+- Docker Desktop (PostgreSQL + Redis)
+- npm
+
+## Швидкий старт
 
 ```bash
+cp .env.example .env
+docker compose up -d
+npx prisma migrate dev --name init
+npx prisma db seed
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Dashboard: [http://localhost:3000](http://localhost:3000)  
+Позиції: [http://localhost:3000/positions](http://localhost:3000/positions)  
+Health: [http://localhost:3000/api/health](http://localhost:3000/api/health)  
+Ready: [http://localhost:3000/api/ready](http://localhost:3000/api/ready)  
+Metrics: [http://localhost:3000/api/metrics](http://localhost:3000/api/metrics)  
+Спостереження: [http://localhost:3000/observability](http://localhost:3000/observability)  
+Prisma Studio: `npx prisma studio`
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Workers (окремий процес, не Next.js):
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+# Рекомендовано: prediction orderbook WSS + spot WSS
+# REST лише рідко для назв ринків (раз на 10 хв), без поллінгу стаканів
+npm run worker:live
 
-## Learn More
+# Окремо:
+npm run worker:prediction   # wss://api.binance.com/sapi/wss topic=web3_prediction_orderbook_data
+npm run worker:underlying   # публічний spot @ticker
+npm run worker:rest         # тільки метадані ринків, раз на 10 хвилин
+npm run worker:normalize    # replay data/raw/*.jsonl у нормалізовані таблиці
+npm run worker:backtest -- configs/backtest.momentum-lag.json
+npm run worker:backtest -- configs/backtest.example.json
+npm run worker:backtest -- configs/backtest.fair-value.json
+npm run worker:strategy
+npm run worker:risk
+npm run worker:paper          # paper fills vs getQuote + book; never placeOrder
+npm run worker:live-exec      # live placeOrder only if BOTH live flags are on
+npm run worker:observe        # health / alerts / metrics snapshot
+```
 
-To learn more about Next.js, take a look at the following resources:
+Для prediction WebSocket потрібні `BINANCE_PAPER_API_KEY` і `SECRET` (підписаний SApi WSS). Spot ключів не потребує.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Сирі payload-и: Redis (live стакан кожен тік) + Postgres/jsonl не частіше 1 раз/сек на ринок, щоб не забити диск.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Змінні середовища
 
-## Deploy on Vercel
+Див. `.env.example`. Критичні прапорці:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Змінна | Значення за замовчуванням | Примітка |
+| --- | --- | --- |
+| `LIVE_TRADING_ENABLED` | `false` | Live не вмикається без цього |
+| `TRADING_MODE` | `PAPER` | Потрібні обидва: `true` + `LIVE` |
+| `BINANCE_PAPER_API_KEY` | порожньо | Тільки сервер |
+| `BINANCE_LIVE_API_KEY` | порожньо | Окремі credentials від paper |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Секрети Binance ніколи не віддаються в браузер.
+
+## Структура
+
+```
+src/app              Next.js dashboard + BFF
+src/lib/binance      адаптери (Phase 2)
+src/lib/normalize    REST/WS → Prisma snapshots (Phase 3)
+src/lib/backtest     event-driven replay (Phase 4)
+src/lib/strategy     pluggable evaluate() (Phase 5)
+src/lib/risk         pre-trade gates / kill switch (Phase 6)
+src/lib/paper        paper execution, quotes, idempotency (Phase 7)
+src/lib/dashboard    BFF payload for the operator UI (Phase 8)
+src/lib/observability health, metrics, alerts (Phase 9)
+infra/aws            Terraform: ECS, RDS, Redis, EFS, S3, ALB (Phase 10)
+src/lib/live         gated official placeOrder (Phase 11)
+src/lib/config       env, live/paper gates
+src/lib/db           Prisma + Redis
+workers/src          окремі Node.js процеси
+prisma               схема і seed
+configs              приклади backtest
+```
+
+## AWS
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.app.yml up --build
+npm run db:migrate:deploy
+```
+
+Прод-міграції: `npm run db:migrate:deploy` (`prisma migrate deploy`, не `migrate dev`). Terraform: `infra/aws` (скопіювати `terraform.tfvars.example`, секрети лише через `TF_VAR_*` або gitignored tfvars). **Не apply-ити наосліп.**
+
+## Правила з ТЗ
+
+1. Не вважати стратегію прибутковою апріорі.
+2. Стратегії pluggable і незалежно backtestable.
+3. Live trading не вмикати за замовчуванням.
+4. API-секрети тільки на сервері.
+5. У backtest не використовувати майбутні дані.
+6. PnL завжди з fees, slippage, price impact і network/provider costs.
+7. Брати реальні схеми Binance, не вигадувати endpoint-и.
+8. Якщо capability немає — ізолювати за адаптером, не підробляти.

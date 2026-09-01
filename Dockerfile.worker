@@ -1,0 +1,17 @@
+FROM node:22-alpine
+WORKDIR /app
+RUN apk add --no-cache openssl
+ENV NODE_ENV=production
+ENV LIVE_TRADING_ENABLED=false
+ENV TRADING_MODE=PAPER
+ENV RAW_DATA_DIR=/data/raw
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm install tsx
+COPY prisma ./prisma
+COPY src ./src
+COPY workers ./workers
+COPY configs ./configs
+COPY tsconfig.json ./
+RUN npx prisma generate && mkdir -p /data/raw && chown -R node:node /app /data
+USER node
+CMD ["npx", "tsx", "workers/src/index.ts", "collector:live"]
