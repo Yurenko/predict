@@ -16,6 +16,11 @@ export function decidePaperAction(
   return "EXIT";
 }
 
+/** Same market + token already held by another strategy — do not open a second $50 copy. */
+export function isDuplicatePaperEnter(action: PaperAction, peerOccupied: boolean): boolean {
+  return action === "ENTER" && peerOccupied;
+}
+
 export function paperOrderSide(
   action: Exclude<PaperAction, "HOLD">,
   direction: SignalDirection,

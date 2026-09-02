@@ -6,7 +6,8 @@ export default function BacktestsPage() {
       <header className="space-y-2">
         <h1 className="text-3xl font-semibold tracking-tight">Бектести</h1>
         <p className="max-w-2xl text-sm leading-6 text-zinc-400">
-          Результати walk-forward / replay. Жодна стратегія не вважається прибутковою апріорі.
+          Replay історії prediction-книги з комісіями. Після Старт на Огляді з’являться знімки.
+          Тут натисніть «Прогнати» — окремий термінал не потрібен.
         </p>
       </header>
       <BacktestsPanel />

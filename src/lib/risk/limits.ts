@@ -13,6 +13,7 @@ export function limitsFromEnv(): RiskLimits {
     maxPriceImpact: env.MAX_PRICE_IMPACT,
     minLiquidityUsdt: env.MIN_LIQUIDITY_USDT,
     minTimeToExpirySec: env.MIN_TIME_TO_EXPIRY_SEC,
+    maxTimeToExpirySec: env.COLLECTOR_MAX_TIME_TO_EXPIRY_SEC,
     staleMs: env.WS_STALE_MS,
     cooldownMs: env.RISK_COOLDOWN_MS,
     consecutiveLossesForCooldown: env.RISK_CONSECUTIVE_LOSSES,

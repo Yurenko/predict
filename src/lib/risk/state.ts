@@ -1,4 +1,4 @@
-import { RiskEventType } from "@prisma/client";
+import { RiskEventType, TradingMode } from "@prisma/client";
 import type { RiskLimits, RiskSnapshot } from "@/lib/risk/types";
 
 export function utcDay(at: Date): string {
@@ -60,16 +60,18 @@ export function recordClosedTrade(
   };
 
   const tripped: RiskEventType[] = [];
+  const liveHalt = next.mode === TradingMode.LIVE;
   const dailyLossLimit = -limits.bankrollUsdt * (limits.maxDailyLossPct / 100);
-  if (dailyPnl <= dailyLossLimit) {
+  if (liveHalt && dailyPnl <= dailyLossLimit) {
     next = armKillSwitch(next, "max_daily_loss", now, limits.cooldownMs);
     tripped.push(RiskEventType.MAX_DAILY_LOSS, RiskEventType.KILL_SWITCH);
   }
-  if (currentDrawdown >= limits.maxDrawdownPct / 100) {
+  if (liveHalt && currentDrawdown >= limits.maxDrawdownPct / 100) {
     next = armKillSwitch(next, "max_drawdown", now, limits.cooldownMs);
     tripped.push(RiskEventType.MAX_DRAWDOWN, RiskEventType.KILL_SWITCH);
   }
   if (
+    liveHalt &&
     consecutiveLosses >= limits.consecutiveLossesForCooldown &&
     !next.killSwitch
   ) {

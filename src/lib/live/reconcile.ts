@@ -1,4 +1,4 @@
-import { OrderStatus, PositionStatus, TradingMode } from "@prisma/client";
+import { OrderStatus, PositionStatus, Prisma, TradingMode } from "@prisma/client";
 import type { W3WPredictionRestAPI } from "@binance/w3w-prediction";
 import { prisma } from "@/lib/db/prisma";
 import { asNumber } from "@/lib/normalize/numbers";
@@ -126,6 +126,12 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolea
           realizedPnl: pnl,
           feesPaid: { increment: fill.fee },
           networkCostPaid: { increment: fill.networkCost },
+          rawPayload: {
+            ...(open.rawPayload && typeof open.rawPayload === "object"
+              ? (open.rawPayload as Record<string, unknown>)
+              : {}),
+            closePrice: fill.price,
+          } as Prisma.InputJsonValue,
         },
       });
       positionId = open.id;

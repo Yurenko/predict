@@ -24,6 +24,7 @@ function printUsage(): void {
   console.log("  strategy                List research strategies (Phase 5)");
   console.log("  risk                    Risk gates / kill switch status");
   console.log("  paper | execution       Paper trader (Phase 7; never placeOrder)");
+  console.log("  record                  Start/stop data recorder (no trading)");
   console.log("  live                    Live trader (Phase 11; placeOrder only if both flags on)");
   console.log("  observe                 Health / metrics dump (Phase 9)");
 }
@@ -65,6 +66,9 @@ async function main(): Promise<void> {
     case "paper":
     case "execution":
       await (await import("./execution/service")).startPaperTrader();
+      return;
+    case "record":
+      await (await import("./record")).startRecordWorker();
       return;
     case "live":
       await (await import("./execution/live")).startLiveTrader();

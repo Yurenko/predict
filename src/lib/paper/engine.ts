@@ -13,7 +13,7 @@ import { paperOrderSide } from "@/lib/paper/action";
 import { clientOrderIdFromKey, paperIdempotencyKey, timeBucket } from "@/lib/paper/idempotency";
 import { assertPaperExecution } from "@/lib/paper/live-gate";
 import { transitionOrder } from "@/lib/paper/state-machine";
-import { validateQuoteForFill, type PaperQuote } from "@/lib/paper/quote-validate";
+import { validateQuoteForFill, demoQuoteFromBook, type PaperQuote } from "@/lib/paper/quote-validate";
 import { inc } from "@/lib/observability/metrics";
 
 export interface PaperBook {
@@ -42,6 +42,8 @@ export interface PaperTradeRequest {
   maxPriceImpact: number;
   /** Required for EXIT so we sell a long / buy back a short. */
   positionSide?: OrderSide;
+  /** When set, EXIT closes this row instead of the first matching open. */
+  positionId?: string;
   idempotencyWindowMs?: number;
 }
 
@@ -107,6 +109,43 @@ function fail(
   return result;
 }
 
+export function skippedPaperTrade(
+  request: PaperTradeRequest,
+  reason: string,
+): PaperTradeResult {
+  const side = paperOrderSide(request.action, request.signal.direction, request.positionSide);
+  const key = paperIdempotencyKey({
+    mode: request.mode,
+    strategyId: request.strategyId,
+    marketId: request.marketId,
+    tokenId: request.tokenId,
+    side,
+    action: request.action,
+    bucketMs: timeBucket(request.now, request.idempotencyWindowMs ?? 5_000),
+  });
+  return fail(request, key, OrderStatus.FAILED, reason, side, false);
+}
+
+function demoFillFromBook(
+  request: PaperTradeRequest,
+  key: string,
+  side: OrderSide,
+): ReturnType<typeof validateQuoteForFill> {
+  const fillPrice = side === OrderSide.BUY ? request.book.bestAsk : request.book.bestBid;
+  if (fillPrice === null || !(fillPrice > 0)) {
+    return { ok: false, reason: "no_executable_book" };
+  }
+  return {
+    ok: true,
+    fillPrice,
+    quote: demoQuoteFromBook({
+      quoteId: `paper-demo:${key}`,
+      tokenId: request.tokenId,
+      fillPrice,
+    }),
+  };
+}
+
 /**
  * Simulate a paper fill. Never sends a Binance placeOrder.
  * LIVE mode is refused here; Phase 11 owns live submission.
@@ -144,11 +183,19 @@ export function executePaperTrade(
     lastPrice: request.book.lastPrice,
     now: request.now,
   });
-  if (!quoteCheck.ok) {
+  const demoReasons = new Set(["missing_quote", "missing_quote_id", "quote_expired"]);
+  const resolvedQuote =
+    quoteCheck.ok
+      ? quoteCheck
+      : demoReasons.has(quoteCheck.reason)
+        ? demoFillFromBook(request, key, side)
+        : quoteCheck;
+  if (!resolvedQuote.ok) {
     const status =
-      quoteCheck.reason === "quote_expired" ? OrderStatus.EXPIRED : OrderStatus.FAILED;
-    return fail(request, key, status, quoteCheck.reason, side, false);
+      resolvedQuote.reason === "quote_expired" ? OrderStatus.EXPIRED : OrderStatus.FAILED;
+    return fail(request, key, status, resolvedQuote.reason, side, false);
   }
+  const usedDemoBook = !quoteCheck.ok;
 
   const decision = evaluateRisk(
     {
@@ -163,11 +210,11 @@ export function executePaperTrade(
       lastPrice: request.book.lastPrice,
       liquidity: request.book.liquidity,
       timeToExpirySec: request.book.timeToExpirySec,
-      estimatedSlippageBps: quoteCheck.quote.slippageBps,
-      estimatedPriceImpact: quoteCheck.quote.priceImpact,
-      quoteExpireAt: quoteCheck.quote.expireAt,
+      estimatedSlippageBps: resolvedQuote.quote.slippageBps,
+      estimatedPriceImpact: resolvedQuote.quote.priceImpact,
+      quoteExpireAt: resolvedQuote.quote.expireAt,
       dataAgeMs: request.book.dataAgeMs,
-      proposedFillPrice: quoteCheck.fillPrice,
+      proposedFillPrice: resolvedQuote.fillPrice,
     },
     riskState,
     limits,
@@ -191,13 +238,13 @@ export function executePaperTrade(
   const fill = simulateFill({
     side,
     requestedNotional: request.requestedNotional,
-    bestBid: side === OrderSide.SELL ? quoteCheck.fillPrice : request.book.bestBid,
-    bestAsk: side === OrderSide.BUY ? quoteCheck.fillPrice : request.book.bestAsk,
+    bestBid: side === OrderSide.SELL ? resolvedQuote.fillPrice : request.book.bestBid,
+    bestAsk: side === OrderSide.BUY ? resolvedQuote.fillPrice : request.book.bestAsk,
     lastPrice: request.book.lastPrice,
     bidDepth: request.book.bidDepth,
     askDepth: request.book.askDepth,
     liquidity: request.book.liquidity,
-    quote: toHistoricalQuote(quoteCheck.quote),
+    quote: toHistoricalQuote(resolvedQuote.quote),
     costs: {
       useQuoteFees: true,
       fallbackFeeRateBps: null,
@@ -224,7 +271,7 @@ export function executePaperTrade(
     idempotencyKey: key,
     status,
     side,
-    reason: fill.partial ? "partial_fill" : "filled",
+    reason: fill.partial ? "partial_fill" : usedDemoBook ? "filled_demo_book" : "filled",
     fill,
     riskAllowed: true,
     orderType: OrderType.MARKET,

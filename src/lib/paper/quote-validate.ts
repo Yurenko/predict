@@ -110,6 +110,28 @@ export function validateQuoteForFill(options: {
   return { ok: true, fillPrice, quote };
 }
 
+/** Last-book quote when official getQuote is missing. Demo account only. */
+export function demoQuoteFromBook(options: {
+  quoteId: string;
+  tokenId: string;
+  fillPrice: number;
+  feeRateBps?: number;
+}): PaperQuote {
+  return {
+    quoteId: options.quoteId,
+    tokenId: options.tokenId,
+    averagePrice: options.fillPrice,
+    lastPrice: null,
+    chance: options.fillPrice,
+    feeAmount: null,
+    feeRateBps: options.feeRateBps ?? 0,
+    slippageBps: 0,
+    priceImpact: 0,
+    minReceive: null,
+    expireAt: null,
+  };
+}
+
 export function officialQuoteHasCosts(quote: OfficialQuote): boolean {
   return quoteHasExecutableCosts(quote);
 }

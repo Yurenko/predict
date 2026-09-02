@@ -13,6 +13,9 @@ export interface ManagedWsOptions {
   maxConnectionMs: number;
   reconnectDelayMs?: number;
   pingIntervalMs?: number;
+  /** JSON payload instead of a WebSocket protocol ping (SApi WSS). */
+  applicationPing?: () => unknown;
+  onOpen?: (send: (payload: unknown) => void) => void;
   onMessage: (payload: unknown, meta: { observedAt: Date; hash: string }) => Promise<void> | void;
   onStale?: (ageMs: number) => void;
   extractObservedAt?: (payload: unknown) => unknown;
@@ -31,6 +34,7 @@ export class ManagedWebSocket {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
   private reconnecting = false;
+  private immediateRejects = 0;
 
   constructor(private readonly options: ManagedWsOptions) {}
 
@@ -69,6 +73,11 @@ export class ManagedWebSocket {
     socket.on("open", () => {
       log.info({ name: this.options.name }, "websocket open");
       this.armWatchdogs(socket);
+      try {
+        this.options.onOpen?.((payload) => this.sendJson(payload));
+      } catch (error) {
+        log.warn({ name: this.options.name, err: String(error) }, "websocket onOpen failed");
+      }
     });
 
     socket.on("message", (raw) => {
@@ -84,12 +93,35 @@ export class ManagedWebSocket {
     });
 
     socket.on("close", (code, reason) => {
-      log.warn(
-        { name: this.options.name, code, reason: reason.toString() },
-        "websocket closed",
-      );
+      const reasonText = reason.toString();
+      const lifetimeMs = Date.now() - this.connectedAt;
+      const plan = reconnectDelayAfterClose({
+        baseDelayMs: this.options.reconnectDelayMs ?? 2_000,
+        lifetimeMs,
+        code,
+        reason: reasonText,
+        immediateRejects: this.immediateRejects,
+      });
+      this.immediateRejects = plan.nextImmediateRejects;
+      if (plan.immediate) {
+        log.warn(
+          {
+            name: this.options.name,
+            code,
+            reason: reasonText,
+            delayMs: plan.delayMs,
+            attempt: this.immediateRejects,
+          },
+          "websocket closed immediately (Bye/auth); backing off",
+        );
+      } else {
+        log.warn(
+          { name: this.options.name, code, reason: reasonText },
+          "websocket closed",
+        );
+      }
       if (!this.stopped) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(plan.delayMs);
       }
     });
   }
@@ -118,6 +150,7 @@ export class ManagedWebSocket {
     }
     this.lastHashByKey.set(duplicateKey, hash);
     this.lastMessageAt = Date.now();
+    this.immediateRejects = 0;
 
     await this.options.onMessage(payload, { observedAt, hash });
   }
@@ -128,9 +161,13 @@ export class ManagedWebSocket {
 
     if (this.options.pingIntervalMs) {
       this.pingTimer = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.ping();
+        if (socket.readyState !== WebSocket.OPEN) return;
+        if (this.options.applicationPing) {
+          this.sendJson(this.options.applicationPing());
+          this.lastMessageAt = Date.now();
+          return;
         }
+        socket.ping();
       }, this.options.pingIntervalMs);
     }
 
@@ -181,6 +218,12 @@ export class ManagedWebSocket {
     this.reconnectTimer = null;
   }
 
+  private sendJson(payload: unknown): void {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify(payload));
+  }
+
   private async closeSocket(): Promise<void> {
     const socket = this.socket;
     this.socket = null;
@@ -195,6 +238,23 @@ export class ManagedWebSocket {
       setTimeout(resolve, 250);
     });
   }
+}
+
+export function reconnectDelayAfterClose(options: {
+  baseDelayMs: number;
+  lifetimeMs: number;
+  code: number;
+  reason: string;
+  immediateRejects: number;
+}): { delayMs: number; nextImmediateRejects: number; immediate: boolean } {
+  const immediate =
+    options.lifetimeMs < 2_000 && (options.code === 1000 || /bye/i.test(options.reason));
+  if (!immediate) {
+    return { delayMs: options.baseDelayMs, nextImmediateRejects: 0, immediate: false };
+  }
+  const rejects = options.immediateRejects + 1;
+  const delayMs = Math.min(60_000, options.baseDelayMs * 2 ** Math.min(rejects - 1, 5));
+  return { delayMs, nextImmediateRejects: rejects, immediate: true };
 }
 
 export function assertFresh(ageMs: number, staleMs: number, component: string): void {

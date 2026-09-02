@@ -4,12 +4,11 @@ import { loadReplayEvents } from "@/lib/backtest/load";
 import { persistBacktestResult } from "@/lib/backtest/persist";
 import { createStrategy, registeredStrategySlugs } from "@/lib/strategy";
 import { childLogger } from "@/lib/logger";
-import type { BacktestResult } from "@/lib/backtest/types";
+import type { BacktestConfig, BacktestResult } from "@/lib/backtest/types";
 
 const log = childLogger({ component: "backtest-run" });
 
-export async function runBacktestFromFile(configPath: string): Promise<BacktestResult> {
-  const config = await loadBacktestConfigFile(configPath);
+export async function runBacktestFromConfig(config: BacktestConfig): Promise<BacktestResult> {
   const strategy = createStrategy(config.strategy, config.parameters);
   if (!strategy) {
     throw new Error(
@@ -30,4 +29,8 @@ export async function runBacktestFromFile(configPath: string): Promise<BacktestR
     "backtest complete",
   );
   return result;
+}
+
+export async function runBacktestFromFile(configPath: string): Promise<BacktestResult> {
+  return runBacktestFromConfig(await loadBacktestConfigFile(configPath));
 }

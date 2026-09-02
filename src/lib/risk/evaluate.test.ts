@@ -16,6 +16,7 @@ function limits(over: Partial<RiskLimits> = {}): RiskLimits {
     maxPriceImpact: 0.05,
     minLiquidityUsdt: 100,
     minTimeToExpirySec: 60,
+    maxTimeToExpirySec: 86_400,
     staleMs: 15_000,
     cooldownMs: 900_000,
     consecutiveLossesForCooldown: 5,
@@ -62,18 +63,54 @@ describe("evaluateRisk", () => {
     expect(decision.checks.find((item) => item.name === "live_gate")?.passed).toBe(false);
   });
 
-  it("blocks ENTER on kill switch but still allows EXIT", () => {
+  it("blocks LIVE ENTER on kill switch but still allows EXIT; PAPER ignores kill", () => {
     const armed = state(lim, { killSwitch: true, killSwitchReason: "manual" });
-    expect(evaluateRisk(intent(), armed, lim).allowed).toBe(false);
+    expect(evaluateRisk(intent(), armed, lim).allowed).toBe(true);
     expect(evaluateRisk(intent({ action: "EXIT" }), armed, lim).allowed).toBe(true);
+    const liveLimits = limits({ liveTradingEnabled: true });
+    const liveArmed = state(liveLimits, { killSwitch: true, killSwitchReason: "manual" });
+    expect(evaluateRisk(intent({ mode: TradingMode.LIVE }), liveArmed, liveLimits).allowed).toBe(
+      false,
+    );
+    expect(
+      evaluateRisk(intent({ mode: TradingMode.LIVE, action: "EXIT" }), liveArmed, liveLimits)
+        .allowed,
+    ).toBe(true);
   });
 
-  it("blocks ENTER on stale data and API breaker, allows EXIT", () => {
+  it("blocks LIVE ENTER on stale data, cooldown, and API breaker; PAPER demo still enters", () => {
+    const liveLimits = limits({ liveTradingEnabled: true });
     expect(
-      evaluateRisk(intent({ dataAgeMs: 20_000 }), state(lim), lim).allowed,
+      evaluateRisk(
+        intent({ mode: TradingMode.LIVE, dataAgeMs: 20_000 }),
+        state(liveLimits),
+        liveLimits,
+      ).allowed,
+    ).toBe(false);
+    expect(evaluateRisk(intent({ dataAgeMs: 20_000 }), state(lim), lim).allowed).toBe(true);
+    expect(evaluateRisk(intent(), state(lim, { apiErrorBreaker: true }), lim).allowed).toBe(
+      true,
+    );
+    expect(
+      evaluateRisk(
+        intent({ mode: TradingMode.LIVE }),
+        state(liveLimits, { apiErrorBreaker: true }),
+        liveLimits,
+      ).allowed,
     ).toBe(false);
     expect(
-      evaluateRisk(intent(), state(lim, { apiErrorBreaker: true }), lim).allowed,
+      evaluateRisk(
+        intent(),
+        state(lim, { cooldownUntil: new Date("2026-01-01T00:15:00.000Z") }),
+        lim,
+      ).allowed,
+    ).toBe(true);
+    expect(
+      evaluateRisk(
+        intent({ mode: TradingMode.LIVE }),
+        state(liveLimits, { cooldownUntil: new Date("2026-01-01T00:15:00.000Z") }),
+        liveLimits,
+      ).allowed,
     ).toBe(false);
     expect(
       evaluateRisk(intent({ action: "EXIT", dataAgeMs: 20_000 }), state(lim, { staleData: true }), lim)
@@ -90,7 +127,13 @@ describe("evaluateRisk", () => {
       evaluateRisk(intent({ requestedNotional: 50 }), state(lim, { openNotional: 980 }), lim).allowed,
     ).toBe(false);
     expect(evaluateRisk(intent({ timeToExpirySec: 10 }), state(lim), lim).allowed).toBe(false);
+    expect(evaluateRisk(intent({ timeToExpirySec: 200_000 }), state(lim), lim).allowed).toBe(
+      false,
+    );
     expect(evaluateRisk(intent({ liquidity: null }), state(lim), lim).allowed).toBe(false);
+    expect(evaluateRisk(intent({ estimatedSlippageBps: 50_000 }), state(lim), lim).allowed).toBe(
+      true,
+    );
   });
 
   it("rejects lastPrice as the proposed fill", () => {
@@ -114,21 +157,32 @@ describe("evaluateRisk", () => {
 });
 
 describe("recordClosedTrade", () => {
-  it("arms kill switch on max daily loss and max drawdown", () => {
+  it("arms kill switch on max daily loss and max drawdown in LIVE", () => {
     const lim = limits({ maxDailyLossPct: 3, maxDrawdownPct: 10 });
-    const start = emptyRiskSnapshot(lim);
+    const start = emptyRiskSnapshot(lim, TradingMode.LIVE);
     const loss = recordClosedTrade(start, -40, new Date("2026-01-01T00:00:00.000Z"), lim);
     expect(loss.state.killSwitch).toBe(true);
     expect(loss.tripped).toContain("MAX_DAILY_LOSS");
 
     const draw = recordClosedTrade(
-      emptyRiskSnapshot(lim),
+      emptyRiskSnapshot(lim, TradingMode.LIVE),
       -150,
       new Date("2026-01-01T00:00:00.000Z"),
       lim,
     );
     expect(draw.state.killSwitch).toBe(true);
     expect(draw.tripped).toContain("MAX_DRAWDOWN");
+  });
+
+  it("does not arm kill or cooldown after PAPER losses", () => {
+    const lim = limits({ maxDailyLossPct: 3, maxDrawdownPct: 10, consecutiveLossesForCooldown: 1 });
+    const start = emptyRiskSnapshot(lim, TradingMode.PAPER);
+    const loss = recordClosedTrade(start, -150, new Date("2026-01-01T00:00:00.000Z"), lim);
+    expect(loss.state.killSwitch).toBe(false);
+    expect(loss.state.cooldownUntil).toBeNull();
+    expect(loss.tripped).toEqual([]);
+    expect(loss.state.equity).toBe(850);
+    expect(loss.state.currentDrawdown).toBeGreaterThan(0);
   });
 
   it("resets daily pnl on a new UTC day", () => {

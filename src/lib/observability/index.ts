@@ -9,5 +9,10 @@ export {
 export { deriveAlerts } from "@/lib/observability/alerts";
 export type { ObservabilityAlert } from "@/lib/observability/alerts";
 export { recordSystemEvent } from "@/lib/observability/events";
-export { collectHealth } from "@/lib/observability/health";
-export type { HealthSnapshot } from "@/lib/observability/health";
+export {
+  collectHealth,
+  loadCollectorHeartbeats,
+  collectorsAreFresh,
+  spotStreamIsLive,
+} from "@/lib/observability/health";
+export type { HealthSnapshot, CollectorHeartbeat } from "@/lib/observability/health";

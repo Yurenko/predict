@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
-import { ManagedWebSocket } from "./ws-connection";
+import { ManagedWebSocket, reconnectDelayAfterClose } from "./ws-connection";
 
 describe("ManagedWebSocket", () => {
   let server: WebSocketServer | undefined;
@@ -44,6 +44,71 @@ describe("ManagedWebSocket", () => {
 
     await viWaitUntil(() => connections >= 2 && seen.length >= 2, 4_000);
     expect(connections).toBeGreaterThanOrEqual(2);
+  });
+
+  it("sends onOpen payload after the socket opens", async () => {
+    server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve) => server?.once("listening", () => resolve()));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    if (!port) {
+      throw new Error("websocket test server did not bind a port");
+    }
+
+    const received: unknown[] = [];
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        received.push(JSON.parse(raw.toString()));
+      });
+    });
+
+    client = new ManagedWebSocket({
+      name: "test-open",
+      url: `ws://127.0.0.1:${port}`,
+      staleMs: 30_000,
+      maxConnectionMs: 30_000,
+      onOpen: (send) => send({ command: "SUBSCRIBE", value: ["topic"] }),
+      onMessage: () => undefined,
+    });
+    client.start();
+
+    await viWaitUntil(() => received.length >= 1, 4_000);
+    expect(received[0]).toEqual({ command: "SUBSCRIBE", value: ["topic"] });
+  });
+});
+
+describe("reconnectDelayAfterClose", () => {
+  it("backs off when the server says Bye immediately", () => {
+    const first = reconnectDelayAfterClose({
+      baseDelayMs: 3_000,
+      lifetimeMs: 20,
+      code: 1000,
+      reason: "Bye",
+      immediateRejects: 0,
+    });
+    expect(first.immediate).toBe(true);
+    expect(first.delayMs).toBe(3_000);
+    const second = reconnectDelayAfterClose({
+      baseDelayMs: 3_000,
+      lifetimeMs: 20,
+      code: 1000,
+      reason: "Bye",
+      immediateRejects: first.nextImmediateRejects,
+    });
+    expect(second.delayMs).toBe(6_000);
+  });
+
+  it("uses the base delay after a normal close", () => {
+    const plan = reconnectDelayAfterClose({
+      baseDelayMs: 3_000,
+      lifetimeMs: 10_000,
+      code: 1006,
+      reason: "",
+      immediateRejects: 4,
+    });
+    expect(plan.immediate).toBe(false);
+    expect(plan.delayMs).toBe(3_000);
+    expect(plan.nextImmediateRejects).toBe(0);
   });
 });
 

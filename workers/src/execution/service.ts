@@ -3,15 +3,16 @@ import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { prisma } from "@/lib/db/prisma";
 import { childLogger } from "@/lib/logger";
 import { asNumber } from "@/lib/normalize/numbers";
-import { pickPrimaryOutcome } from "@/lib/normalize/markets";
+import { tickFromSnapshot } from "@/lib/normalize/tick";
 import { buildStrategyContext } from "@/lib/backtest/context";
-import type { MarketTick, UnderlyingTick } from "@/lib/backtest/types";
+import type { UnderlyingTick } from "@/lib/backtest/types";
 import { evaluateRisk } from "@/lib/risk/evaluate";
 import { limitsFromEnv } from "@/lib/risk/limits";
 import { loadRiskState, persistRiskDecision, persistRiskSnapshot } from "@/lib/risk/persist";
 import { recordClosedTrade } from "@/lib/risk/state";
 import { createStrategy } from "@/lib/strategy";
 import { readLiveOrderbook } from "@/lib/ingest/raw-store";
+import { tradableMarketQuery } from "@/lib/markets/horizon";
 import { sleep } from "@/lib/binance/rate-limit";
 import { inc } from "@/lib/observability/metrics";
 import { recordSystemEvent } from "@/lib/observability/events";
@@ -20,77 +21,28 @@ import {
   executePaperTrade,
   fetchOfficialPaperQuote,
   hasPredictionWallet,
+  readPaperEntryMode,
+  shouldSkipPeerEnter,
   paperExitPnl,
   persistPaperTrade,
+  skippedPaperTrade,
+  writePaperCycle,
+  PAPER_SKIP,
   type PaperBook,
   type PaperQuote,
   type PaperTradeRequest,
 } from "@/lib/paper";
-import { assertPaperWorkerNotLive } from "@/lib/live/gate";
+import { flattenExpiredPaperPositions } from "@/lib/paper/expiry";
 
 const log = childLogger({ component: "paper-worker" });
 
-export function tickFromSnapshot(row: {
-  observedAt: Date;
-  marketId: string;
-  outcomeId: string | null;
-  lastPrice: unknown;
-  chance: unknown;
-  bestBid: unknown;
-  bestAsk: unknown;
-  midPrice: unknown;
-  spread: unknown;
-  liquidity: unknown;
-  bidDepth: unknown;
-  askDepth: unknown;
-  timeToExpirySec: number | null;
-  market: {
-    venueMarketId: string;
-    topic: {
-      symbol: string | null;
-      endDate: Date | null;
-      startPrice: unknown;
-    };
-    outcomes: Array<{ tokenId: string; name: string; outcomeIndex: number | null }>;
-  };
-  outcome: { tokenId: string; name: string } | null;
-}): MarketTick {
-  const primary = pickPrimaryOutcome(
-    row.market.outcomes.map((outcome) => ({
-      tokenId: outcome.tokenId,
-      name: outcome.name,
-      outcomeIndex: outcome.outcomeIndex,
-      lastChance: null,
-      lastPrice: null,
-    })),
-  );
-  return {
-    observedAt: row.observedAt,
-    marketId: row.marketId,
-    venueMarketId: row.market.venueMarketId,
-    outcomeId: row.outcomeId,
-    tokenId: row.outcome?.tokenId ?? primary?.tokenId ?? null,
-    outcomeName: row.outcome?.name ?? primary?.name ?? null,
-    symbol: row.market.topic.symbol,
-    endDate: row.market.topic.endDate,
-    startPrice: asNumber(row.market.topic.startPrice),
-    bestBid: asNumber(row.bestBid),
-    bestAsk: asNumber(row.bestAsk),
-    midPrice: asNumber(row.midPrice),
-    chance: asNumber(row.chance),
-    lastPrice: asNumber(row.lastPrice),
-    spread: asNumber(row.spread),
-    liquidity: asNumber(row.liquidity),
-    bidDepth: asNumber(row.bidDepth),
-    askDepth: asNumber(row.askDepth),
-    timeToExpirySec: row.timeToExpirySec,
-  };
-}
+export { tickFromSnapshot };
 
 export async function runPaperOnce(): Promise<{
   enabled: number;
   considered: number;
   filled: number;
+  skip: string | null;
 }> {
   log.info(
     {
@@ -103,7 +55,15 @@ export async function runPaperOnce(): Promise<{
   const enabled = await prisma.strategy.findMany({ where: { enabled: true } });
   if (enabled.length === 0) {
     log.info("no enabled strategies; paper trader is idle (seed defaults are disabled)");
-    return { enabled: 0, considered: 0, filled: 0 };
+    const cycle = {
+      at: new Date().toISOString(),
+      enabled: 0,
+      considered: 0,
+      filled: 0,
+      skip: PAPER_SKIP.noEnabledStrategies,
+    };
+    await writePaperCycle(cycle);
+    return cycle;
   }
 
   if (!hasPredictionWallet()) {
@@ -111,7 +71,7 @@ export async function runPaperOnce(): Promise<{
   }
 
   const markets = await prisma.market.findMany({
-    take: env.COLLECTOR_MAX_TOPICS,
+    ...tradableMarketQuery(),
     include: {
       topic: true,
       outcomes: true,
@@ -142,12 +102,21 @@ export async function runPaperOnce(): Promise<{
   const limits = limitsFromEnv();
   let riskState = await loadRiskState();
   const now = new Date();
+  const settled = await flattenExpiredPaperPositions({
+    now,
+    riskState,
+    limits,
+    underlyingsBySymbol,
+  });
+  riskState = settled.riskState;
+  const entryMode = await readPaperEntryMode();
   let considered = 0;
-  let filled = 0;
+  let filled = settled.filled;
 
   for (const market of markets) {
     const latest = market.snapshots[0];
     if (!latest) continue;
+    if (market.topic.endDate && now.getTime() >= market.topic.endDate.getTime()) continue;
     considered += 1;
 
     const outcome =
@@ -207,6 +176,26 @@ export async function runPaperOnce(): Promise<{
       const action = decidePaperAction(signal.direction, open?.side ?? null);
       if (action === "HOLD") continue;
 
+      if (action === "ENTER") {
+        const peer = await prisma.position.findFirst({
+          where: {
+            mode: TradingMode.PAPER,
+            status: "OPEN",
+            marketId: market.id,
+            tokenId,
+            NOT: { strategyId: row.id },
+          },
+          select: { id: true, strategyId: true },
+        });
+        if (shouldSkipPeerEnter(entryMode, action, Boolean(peer))) {
+          log.info(
+            { slug: row.slug, market: market.venueMarketId, peerStrategyId: peer?.strategyId, entryMode },
+            "paper skip duplicate enter: same market already open",
+          );
+          continue;
+        }
+      }
+
       const executable =
         action === "EXIT" && open?.side === OrderSide.BUY
           ? tick.bestBid
@@ -251,8 +240,30 @@ export async function runPaperOnce(): Promise<{
       if (!pre.allowed) {
         await persistRiskDecision(pre, { marketId: market.id, strategyId: row.id });
         riskState = pre.nextState;
+        const reason = pre.checks.find((c) => !c.passed)?.name ?? "risk_rejected";
+        const request: PaperTradeRequest = {
+          mode: TradingMode.PAPER,
+          action,
+          strategyId: row.slug,
+          marketId: market.id,
+          outcomeId: tick.outcomeId ?? undefined,
+          tokenId,
+          signal,
+          book,
+          quote: null,
+          now,
+          requestedNotional: notional,
+          maxPriceImpact: limits.maxPriceImpact,
+          positionSide: open?.side,
+          idempotencyWindowMs: env.PAPER_IDEMPOTENCY_MS,
+        };
+        await persistPaperTrade({
+          request,
+          result: skippedPaperTrade(request, reason),
+          signal,
+        });
         log.info(
-          { slug: row.slug, market: market.venueMarketId, reason: pre.checks.find((c) => !c.passed)?.name },
+          { slug: row.slug, market: market.venueMarketId, reason },
           "paper skipped before getQuote",
         );
         continue;
@@ -300,38 +311,36 @@ export async function runPaperOnce(): Promise<{
         riskState = result.riskDecision.nextState;
       }
 
-      if (result.fill || quote) {
-        const saved = await persistPaperTrade({ request, result, signal });
-        if (result.fill && (result.status === "FILLED" || result.status === "PARTIALLY_FILLED")) {
-          filled += 1;
-          if (action === "ENTER") {
-            riskState = {
-              ...riskState,
-              openPositions: riskState.openPositions + 1,
-              openNotional: riskState.openNotional + result.fill.notional,
-            };
-          } else if (action === "EXIT" && open) {
-            const pnl =
-              saved?.realizedPnl ??
-              paperExitPnl(
-                {
-                  side: open.side,
-                  avgPrice: Number(open.avgPrice),
-                  shares: Number(open.shares),
-                },
-                result.fill,
-              );
-            const closed = recordClosedTrade(riskState, pnl, now, limits);
-            riskState = {
-              ...closed.state,
-              openPositions: Math.max(0, riskState.openPositions - 1),
-              openNotional: Math.max(
-                0,
-                riskState.openNotional - Number(open.shares) * Number(open.avgPrice),
-              ),
-            };
-            await persistRiskSnapshot(riskState);
-          }
+      const saved = await persistPaperTrade({ request, result, signal });
+      if (result.fill && (result.status === "FILLED" || result.status === "PARTIALLY_FILLED")) {
+        filled += 1;
+        if (action === "ENTER") {
+          riskState = {
+            ...riskState,
+            openPositions: riskState.openPositions + 1,
+            openNotional: riskState.openNotional + result.fill.notional,
+          };
+        } else if (action === "EXIT" && open) {
+          const pnl =
+            saved?.realizedPnl ??
+            paperExitPnl(
+              {
+                side: open.side,
+                avgPrice: Number(open.avgPrice),
+                shares: Number(open.shares),
+              },
+              result.fill,
+            );
+          const closed = recordClosedTrade(riskState, pnl, now, limits);
+          riskState = {
+            ...closed.state,
+            openPositions: Math.max(0, riskState.openPositions - 1),
+            openNotional: Math.max(
+              0,
+              riskState.openNotional - Number(open.shares) * Number(open.avgPrice),
+            ),
+          };
+          await persistRiskSnapshot(riskState);
         }
       }
 
@@ -349,8 +358,24 @@ export async function runPaperOnce(): Promise<{
     }
   }
 
-  log.info({ enabled: enabled.length, considered, filled }, "paper cycle complete");
-  return { enabled: enabled.length, considered, filled };
+  const skip =
+    considered === 0
+      ? markets.length === 0
+        ? PAPER_SKIP.noNearExpiry
+        : PAPER_SKIP.noPredictionBook
+      : filled === 0
+        ? PAPER_SKIP.noEntryYet
+        : null;
+  const cycle = {
+    at: new Date().toISOString(),
+    enabled: enabled.length,
+    considered,
+    filled,
+    skip,
+  };
+  await writePaperCycle(cycle);
+  log.info(cycle, "paper cycle complete");
+  return cycle;
 }
 
 export async function startPaperTrader(): Promise<void> {

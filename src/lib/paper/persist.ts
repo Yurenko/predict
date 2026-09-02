@@ -137,7 +137,9 @@ export async function persistPaperTrade(options: {
             filledShareQty: fill?.shares ?? null,
             fillPercentage: fill
               ? fill.partial
-                ? fill.notional / options.request.requestedNotional
+                ? options.request.requestedNotional > 0
+                  ? fill.notional / options.request.requestedNotional
+                  : 1
                 : 1
               : null,
             averagePrice: fill?.price ?? null,
@@ -156,13 +158,19 @@ export async function persistPaperTrade(options: {
     if (!fill) return { realizedPnl: null };
 
     const open = await prisma.position.findFirst({
-      where: {
-        mode: options.request.mode,
-        status: PositionStatus.OPEN,
-        marketId: market.id,
-        tokenId: options.request.tokenId,
-        ...(strategy ? { strategyId: strategy.id } : {}),
-      },
+      where: options.request.positionId
+        ? {
+            id: options.request.positionId,
+            mode: options.request.mode,
+            status: PositionStatus.OPEN,
+          }
+        : {
+            mode: options.request.mode,
+            status: PositionStatus.OPEN,
+            marketId: market.id,
+            tokenId: options.request.tokenId,
+            ...(strategy ? { strategyId: strategy.id } : {}),
+          },
     });
 
     let positionId = open?.id;
@@ -207,6 +215,12 @@ export async function persistPaperTrade(options: {
           slippagePaid: { increment: fill.slippage },
           priceImpactPaid: { increment: fill.priceImpact },
           networkCostPaid: { increment: fill.networkCost },
+          rawPayload: {
+            ...(open.rawPayload && typeof open.rawPayload === "object"
+              ? (open.rawPayload as Record<string, unknown>)
+              : {}),
+            closePrice: fill.price,
+          } as Prisma.InputJsonValue,
         },
       });
     }

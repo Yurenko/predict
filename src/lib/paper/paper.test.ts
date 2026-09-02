@@ -3,11 +3,11 @@ import { OrderStatus, TradingMode } from "@prisma/client";
 import type { StrategySignal } from "@/lib/types/domain";
 import { emptyRiskSnapshot } from "@/lib/risk/limits";
 import type { RiskLimits } from "@/lib/risk/types";
-import { executePaperTrade, resetPaperIdempotencyCache } from "./engine";
+import { executePaperTrade, resetPaperIdempotencyCache, skippedPaperTrade } from "./engine";
 import { canTransition, transitionOrder } from "./state-machine";
 import { validateQuoteForFill, type PaperQuote } from "./quote-validate";
 import { paperIdempotencyKey, timeBucket } from "./idempotency";
-import { decidePaperAction, paperOrderSide } from "./action";
+import { decidePaperAction, isDuplicatePaperEnter, paperOrderSide } from "./action";
 import { usdtToWei } from "./amounts";
 
 function limits(): RiskLimits {
@@ -21,6 +21,7 @@ function limits(): RiskLimits {
     maxPriceImpact: 0.05,
     minLiquidityUsdt: 100,
     minTimeToExpirySec: 60,
+    maxTimeToExpirySec: 86_400,
     staleMs: 15_000,
     cooldownMs: 900_000,
     consecutiveLossesForCooldown: 5,
@@ -174,18 +175,36 @@ describe("executePaperTrade", () => {
     ).toThrow(/paper worker/);
   });
 
-  it("blocks ENTER when the kill switch is armed", () => {
+  it("fills PAPER ENTER even when the kill switch is armed", () => {
     const armed = emptyRiskSnapshot(lim);
     armed.killSwitch = true;
+    armed.killSwitchReason = "max_drawdown";
     const result = executePaperTrade(request(), armed, lim);
-    expect(result.status).toBe(OrderStatus.FAILED);
-    expect(result.reason).toBe("kill_switch");
+    expect(result.status).toBe(OrderStatus.FILLED);
+    expect(result.riskDecision?.allowed).toBe(true);
   });
 
-  it("refuses a fill without an official quote", () => {
+  it("fills a demo account from the last book when getQuote is missing", () => {
     const result = executePaperTrade(request({ quote: null }), emptyRiskSnapshot(lim), lim);
+    expect(result.status).toBe(OrderStatus.FILLED);
+    expect(result.reason).toBe("filled_demo_book");
+    expect(result.fill?.price).toBeCloseTo(0.46);
+    expect(result.fill?.notional).toBeGreaterThan(0);
+  });
+
+  it("still fills PAPER when the book is older than staleMs", () => {
+    const result = executePaperTrade(
+      request({ book: { ...request().book, dataAgeMs: 20_000 } }),
+      emptyRiskSnapshot(lim),
+      lim,
+    );
+    expect(result.status).toBe(OrderStatus.FILLED);
+  });
+
+  it("records a skipped paper attempt without filling", () => {
+    const result = skippedPaperTrade(request(), "no_executable_book");
     expect(result.status).toBe(OrderStatus.FAILED);
-    expect(result.reason).toBe("missing_quote");
+    expect(result.reason).toBe("no_executable_book");
     expect(result.fill).toBeNull();
   });
 });
@@ -201,9 +220,40 @@ describe("paper helpers", () => {
     expect(paperOrderSide("EXIT", "BUY", "BUY")).toBe("SELL");
   });
 
+  it("skips a second ENTER when another strategy already holds the same contract", () => {
+    expect(isDuplicatePaperEnter("ENTER", true)).toBe(true);
+    expect(isDuplicatePaperEnter("ENTER", false)).toBe(false);
+    expect(isDuplicatePaperEnter("EXIT", true)).toBe(false);
+    expect(isDuplicatePaperEnter("HOLD", true)).toBe(false);
+  });
+
   it("encodes USDT notional as wei for getQuote amountIn", () => {
     expect(usdtToWei(1.5)).toBe("1500000000000000000");
     expect(usdtToWei(50)).toBe("50000000000000000000");
     expect(() => usdtToWei(0)).toThrow(/positive/);
+  });
+});
+
+describe("paper cycle snapshot", () => {
+  it("parses a cycle and prefers the newer timestamp", async () => {
+    const { newerPaperCycle, parsePaperCycle } = await import("./cycle");
+    expect(parsePaperCycle(null)).toBeNull();
+    expect(parsePaperCycle("{")).toBeNull();
+    const older = parsePaperCycle(
+      JSON.stringify({ at: "2026-09-01T12:00:00Z", enabled: 3, considered: 0, filled: 0, skip: "a" }),
+    );
+    const newer = parsePaperCycle(
+      JSON.stringify({ at: "2026-09-01T12:01:00Z", enabled: 3, considered: 2, filled: 1, skip: null }),
+    );
+    expect(newerPaperCycle(older, newer)?.filled).toBe(1);
+    expect(newerPaperCycle(newer, older)?.considered).toBe(2);
+  });
+
+  it("maps ASCII skip codes to Ukrainian for the dashboard", async () => {
+    const { paperSkipLabel, PAPER_SKIP } = await import("./skip");
+    expect(paperSkipLabel(PAPER_SKIP.noPredictionBook)).toMatch(/prediction/);
+    expect(paperSkipLabel(PAPER_SKIP.noPredictionBook)).toMatch(/книгою|книзі|книги/i);
+    expect(paperSkipLabel(null)).toBeNull();
+    expect(paperSkipLabel("already ukrainian")).toBe("already ukrainian");
   });
 });

@@ -9,6 +9,13 @@ export const SECRET_KEY_FRAGMENTS = [
 
 const SECRET_VALUE_RE = /(api[_-]?secret|api[_-]?key|secretKey)/i;
 
+export function redactCredentialMentions(text: string): string {
+  return text
+    .replace(/BINANCE_[A-Z0-9_]+/g, "BINANCE_*")
+    .replace(/api[_-]?secrets?/gi, "credential")
+    .replace(/api[_-]?keys?/gi, "credential");
+}
+
 export function containsSecrets(value: unknown): boolean {
   const text = JSON.stringify(value);
   if (!text) return false;

@@ -18,6 +18,7 @@
     "worker:strategy": "tsx workers/src/index.ts strategy",
     "worker:risk": "tsx workers/src/index.ts risk",
     "worker:paper": "tsx workers/src/index.ts paper",
+    "worker:record": "tsx workers/src/index.ts record",
     "worker:live-exec": "tsx workers/src/index.ts live",
     "worker:observe": "tsx workers/src/index.ts observe",
     "db:up": "docker compose up -d",

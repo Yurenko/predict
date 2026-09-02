@@ -35,11 +35,12 @@ const envSchema = z.object({
   BINANCE_PREDICTION_WALLET_ID: z.string().optional().default(""),
   BINANCE_PREDICTION_ACCOUNT_TYPE: z.enum(["SPOT", "FUNDING"]).default("SPOT"),
   PREDICTION_MIN_REQUEST_INTERVAL_MS: z.coerce.number().int().positive().default(4000),
-  COLLECTOR_L1_CATEGORY: z.string().default("crypto"),
+  COLLECTOR_L1_CATEGORY: z.string().default(""),
   COLLECTOR_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
-  COLLECTOR_REST_DISCOVERY_INTERVAL_MS: z.coerce.number().int().positive().default(600_000),
+  COLLECTOR_REST_DISCOVERY_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   COLLECTOR_WS_PERSIST_MIN_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
   COLLECTOR_MAX_TOPICS: z.coerce.number().int().positive().default(20),
+  COLLECTOR_MAX_TIME_TO_EXPIRY_SEC: z.coerce.number().int().positive().default(86_400),
   COLLECTOR_UNDERLYING_SYMBOLS: z
     .string()
     .default("BTCUSDT,ETHUSDT,SOLUSDT")
@@ -66,6 +67,7 @@ const envSchema = z.object({
   RISK_COOLDOWN_MS: z.coerce.number().int().nonnegative().default(900_000),
   RISK_CONSECUTIVE_LOSSES: z.coerce.number().int().positive().default(5),
   PAPER_LOOP_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  RECORD_LOOP_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
   PAPER_IDEMPOTENCY_MS: z.coerce.number().int().positive().default(5_000),
   LIVE_LOOP_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   LIVE_IDEMPOTENCY_MS: z.coerce.number().int().positive().default(5_000),

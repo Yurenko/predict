@@ -71,10 +71,12 @@ export function Table({
   columns,
   rows,
   empty,
+  footer,
 }: {
   columns: string[];
   rows: ReactNode[][];
   empty: string;
+  footer?: ReactNode[];
 }) {
   if (rows.length === 0) return <Empty>{empty}</Empty>;
   return (
@@ -100,6 +102,17 @@ export function Table({
             </tr>
           ))}
         </tbody>
+        {footer ? (
+          <tfoot>
+            <tr className="border-t border-zinc-700 text-zinc-100">
+              {footer.map((cell, cellIndex) => (
+                <td key={cellIndex} className="px-2 py-2 align-top font-medium">
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          </tfoot>
+        ) : null}
       </table>
     </div>
   );

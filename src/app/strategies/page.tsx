@@ -6,7 +6,8 @@ export default function StrategiesPage() {
       <header className="space-y-2">
         <h1 className="text-3xl font-semibold tracking-tight">Стратегії</h1>
         <p className="max-w-2xl text-sm leading-6 text-zinc-400">
-          Увімкнення пише лише Strategy.enabled. Paper worker підхопить на наступному циклі.
+          Увімкнення пише Strategy.enabled. Перемикач входу: усі стратегії або одна на контракт.
+          Після Старту на Огляді paper підхопить на наступному циклі.
         </p>
       </header>
       <StrategiesPanel />

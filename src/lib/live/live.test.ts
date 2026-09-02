@@ -31,6 +31,7 @@ function limits(): RiskLimits {
     maxPriceImpact: 0.05,
     minLiquidityUsdt: 100,
     minTimeToExpirySec: 60,
+    maxTimeToExpirySec: 86_400,
     staleMs: 15_000,
     cooldownMs: 900_000,
     consecutiveLossesForCooldown: 5,

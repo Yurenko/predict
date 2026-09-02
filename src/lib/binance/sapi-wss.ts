@@ -7,6 +7,15 @@ export function predictionOrderbookTopic(marketId: string | number): string {
   return `web3_prediction_orderbook_${marketId}`;
 }
 
+/** SApi WSS command after connect. Topic in the URL is not enough — the socket stays silent without this. */
+export function sapiSubscribeMessage(topic: string): Record<string, unknown> {
+  return { command: "SUBSCRIBE", value: [topic] };
+}
+
+export function sapiPingMessage(): Record<string, unknown> {
+  return { command: "PING" };
+}
+
 /**
  * Official SApi WSS URL.
  * Params (excluding signature) are sorted alphabetically, then HMAC-SHA256.
@@ -58,6 +67,39 @@ export function parseSapiEnvelope(raw: unknown): SapiWsEnvelope | null {
   return raw as SapiWsEnvelope;
 }
 
+function asMarketId(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  return null;
+}
+
+function asTimestampMs(value: unknown): number | null {
+  if (typeof value === "bigint") return asTimestampMs(Number(value));
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) {
+    return asTimestampMs(Number(value));
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value > 1_000_000_000_000 ? value : value * 1000;
+}
+
+function asLevels(value: unknown): Array<[string, string]> | null {
+  if (!Array.isArray(value)) return null;
+  const levels: Array<[string, string]> = [];
+  for (const row of value) {
+    if (Array.isArray(row) && row[0] != null && row[1] != null) {
+      levels.push([String(row[0]), String(row[1])]);
+      continue;
+    }
+    if (row && typeof row === "object") {
+      const item = row as { price?: unknown; size?: unknown };
+      if (item.price == null || item.size == null) continue;
+      levels.push([String(item.price), String(item.size)]);
+    }
+  }
+  return levels;
+}
+
 export function parseOrderbookPayload(data: unknown): PredictionOrderbookPayload | null {
   let body: unknown = data;
   if (typeof data === "string") {
@@ -68,23 +110,39 @@ export function parseOrderbookPayload(data: unknown): PredictionOrderbookPayload
     }
   }
   if (!body || typeof body !== "object") return null;
-  const row = body as Partial<PredictionOrderbookPayload>;
-  if (row.msgType !== "orderbook" || typeof row.marketId !== "number") {
-    return null;
-  }
-  if (typeof row.updateTimestampMs !== "number" || !Number.isFinite(row.updateTimestampMs)) {
-    return null;
-  }
-  if (!Array.isArray(row.asks) || !Array.isArray(row.bids)) {
+  const row = body as Record<string, unknown>;
+  if (row.msgType != null && row.msgType !== "orderbook") return null;
+  const marketId = asMarketId(row.marketId);
+  const updateTimestampMs = asTimestampMs(row.updateTimestampMs ?? row.timestamp);
+  const asks = asLevels(row.asks);
+  const bids = asLevels(row.bids);
+  if (marketId === null || updateTimestampMs === null || !asks || !bids) {
     return null;
   }
   return {
     msgType: "orderbook",
-    marketId: row.marketId,
-    updateTimestampMs: row.updateTimestampMs,
-    asks: row.asks as Array<[string, string]>,
-    bids: row.bids as Array<[string, string]>,
+    marketId,
+    updateTimestampMs,
+    asks,
+    bids,
   };
+}
+
+export function restOrderBookToPayload(
+  marketId: string | number,
+  book: {
+    timestamp?: number | bigint;
+    bids?: Array<{ price?: string; size?: string }>;
+    asks?: Array<{ price?: string; size?: string }>;
+  },
+): PredictionOrderbookPayload | null {
+  return parseOrderbookPayload({
+    msgType: "orderbook",
+    marketId,
+    updateTimestampMs: book.timestamp ?? Date.now(),
+    bids: book.bids,
+    asks: book.asks,
+  });
 }
 
 export function shouldApplyOrderbookUpdate(

@@ -5,6 +5,9 @@ import {
   buildSapiWssUrl,
   parseOrderbookPayload,
   parseSapiEnvelope,
+  restOrderBookToPayload,
+  sapiPingMessage,
+  sapiSubscribeMessage,
   shouldApplyOrderbookUpdate,
 } from "./sapi-wss";
 
@@ -49,6 +52,25 @@ describe("orderbook envelope", () => {
     expect(book?.marketId).toBe(8859231);
     expect(book?.bids[0]?.[0]).toBe("0.31");
     expect(book?.asks[0]?.[1]).toBe("500");
+  });
+
+  it("parses REST {price,size} books and string market ids", () => {
+    const book = restOrderBookToPayload("42", {
+      timestamp: 1_717_420_800_123,
+      bids: [{ price: "0.31", size: "800" }],
+      asks: [{ price: "0.32", size: "500" }],
+    });
+    expect(book?.marketId).toBe(42);
+    expect(book?.bids).toEqual([["0.31", "800"]]);
+    expect(book?.asks).toEqual([["0.32", "500"]]);
+  });
+
+  it("builds SApi subscribe and ping commands", () => {
+    expect(sapiSubscribeMessage("web3_prediction_orderbook_data")).toEqual({
+      command: "SUBSCRIBE",
+      value: ["web3_prediction_orderbook_data"],
+    });
+    expect(sapiPingMessage()).toEqual({ command: "PING" });
   });
 
   it("discards out-of-order updates", () => {

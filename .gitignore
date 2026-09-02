@@ -44,6 +44,7 @@ next-env.d.ts
 # collected dumps
 /data/raw
 /data/backtests
+/data/logs
 
 # terraform
 **/.terraform/

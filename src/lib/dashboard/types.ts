@@ -13,6 +13,10 @@ export interface DashboardRisk {
   dailyLossDate: string | null;
   peakEquity: number;
   equity: number;
+  realizedEquity: number;
+  mtmEquity: number;
+  unrealizedPnl: number;
+  openMissingMark: number;
   currentDrawdown: number;
   consecutiveLosses: number;
   cooldownUntil: string | null;
@@ -30,6 +34,7 @@ export interface DashboardLimits {
   maxDrawdownPct: number;
   minLiquidityUsdt: number;
   minTimeToExpirySec: number;
+  maxTimeToExpirySec: number;
 }
 
 export interface DashboardPosition {
@@ -40,6 +45,7 @@ export interface DashboardPosition {
   tokenId: string;
   marketId: string;
   marketTitle: string;
+  marketQuestion: string | null;
   venueMarketId: string;
   strategySlug: string | null;
   shares: number;
@@ -48,10 +54,13 @@ export interface DashboardPosition {
   realizedPnl: number;
   mark: number | null;
   markSource: "bid" | "ask" | "none";
+  markHeld?: boolean;
   unrealizedPnl: number | null;
   lastPriceHistorical: number | null;
+  exitPrice: number | null;
   openedAt: string;
   closedAt: string | null;
+  endDate: string | null;
 }
 
 export interface DashboardOrder {
@@ -61,6 +70,7 @@ export interface DashboardOrder {
   side: string;
   tokenId: string;
   marketTitle: string;
+  marketQuestion: string | null;
   requestedAmount: number;
   averagePrice: number | null;
   filledUsdtAmount: number | null;
@@ -72,6 +82,7 @@ export interface DashboardSignal {
   id: string;
   strategySlug: string;
   marketTitle: string;
+  marketQuestion: string | null;
   direction: string;
   netEdge: number;
   accepted: boolean;
@@ -83,8 +94,11 @@ export interface DashboardMarket {
   id: string;
   venueMarketId: string;
   title: string;
+  question: string | null;
+  topicTitle: string | null;
   symbol: string | null;
   status: string | null;
+  endDate: string | null;
   bestBid: number | null;
   bestAsk: number | null;
   lastPriceHistorical: number | null;
@@ -123,6 +137,66 @@ export interface DashboardRiskEvent {
   createdAt: string;
 }
 
+export interface DashboardCollector {
+  channel: string;
+  lastAt: string | null;
+  ageMs: number | null;
+  stale: boolean;
+}
+
+export interface DashboardUnderlying {
+  symbol: string;
+  price: number | null;
+  observedAt: string | null;
+}
+
+export interface DashboardPaperCycle {
+  at: string;
+  enabled: number;
+  considered: number;
+  filled: number;
+  skip: string | null;
+}
+
+export interface DashboardRecordStatus {
+  running: boolean;
+  workerAlive: boolean;
+  collecting: boolean;
+  lastSampleAt: string | null;
+  lastError: string | null;
+  tickCount: number;
+  signalCount: number;
+  sessionId: string | null;
+  paper: DashboardPaperCycle | null;
+}
+
+export interface DashboardLedgerPage {
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface DashboardLedger {
+  openPositions: number;
+  closedPositions: number;
+  orders: number;
+  signals: number;
+  closedRealized: number;
+  pages: {
+    positions: DashboardLedgerPage;
+    orders: DashboardLedgerPage;
+    signals: DashboardLedgerPage;
+  };
+}
+
+export interface DashboardAccount {
+  walletPreview: string | null;
+  hasWallet: boolean;
+  hasPaperKeys: boolean;
+  bankrollUsdt: number;
+  accountType: string;
+}
+
 export interface DashboardPayload {
   phase: typeof CURRENT_PHASE;
   tradingMode: "PAPER" | "LIVE";
@@ -133,11 +207,17 @@ export interface DashboardPayload {
   health: DashboardHealth;
   risk: DashboardRisk;
   limits: DashboardLimits;
+  account: DashboardAccount;
+  ledger: DashboardLedger;
+  record: DashboardRecordStatus;
+  collectors: DashboardCollector[];
+  underlyings: DashboardUnderlying[];
   positions: DashboardPosition[];
   orders: DashboardOrder[];
   signals: DashboardSignal[];
   markets: DashboardMarket[];
   strategies: DashboardStrategy[];
+  paperEntryMode: "all" | "single";
   backtests: DashboardBacktest[];
   riskEvents: DashboardRiskEvent[];
 }

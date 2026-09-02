@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { markPrice, unrealizedPnl } from "./mark";
-import { containsSecrets } from "./sanitize";
+import { containsSecrets, redactCredentialMentions } from "./sanitize";
 import { emptyDashboard } from "./load";
 
 describe("markPrice", () => {
@@ -32,13 +32,31 @@ describe("dashboard secrets", () => {
     expect(containsSecrets(payload)).toBe(false);
     expect(payload.hasPaperKeys).toBeTypeOf("boolean");
     expect(payload.hasLiveKeys).toBeTypeOf("boolean");
-    expect(payload.hasLiveKeys).toBe(false);
     expect(payload.hasWallet).toBeTypeOf("boolean");
+    expect(payload.record.running).toBe(false);
+    expect(payload.record.paper).toBeNull();
+    expect(payload.risk.mtmEquity).toBe(payload.risk.realizedEquity);
+    expect(payload.risk.unrealizedPnl).toBe(0);
+    expect(payload.risk.openMissingMark).toBe(0);
+    expect(payload.ledger.openPositions).toBe(0);
+    expect(payload.ledger.closedPositions).toBe(0);
+    expect(payload.ledger.closedRealized).toBe(0);
+    expect(payload.ledger.pages.positions.page).toBe(1);
+    expect(payload.paperEntryMode).toBe("single");
+    expect(payload.account.hasWallet).toBeTypeOf("boolean");
+    expect(payload.account.walletPreview === null || !payload.account.walletPreview.includes("api")).toBe(true);
+    expect(payload.collectors).toEqual([]);
     expect(JSON.stringify(payload)).not.toMatch(/BINANCE_.*API_/);
   });
 
   it("flags objects that embed API keys", () => {
     expect(containsSecrets({ BINANCE_PAPER_API_KEY: "abc" })).toBe(true);
     expect(containsSecrets({ apiSecret: "x" })).toBe(true);
+  });
+
+  it("redacts Binance error text so the dashboard can show it", () => {
+    const redacted = redactCredentialMentions("Invalid API-key, IP, or permissions for action.");
+    expect(containsSecrets({ lastError: redacted })).toBe(false);
+    expect(redacted).toContain("credential");
   });
 });

@@ -30,9 +30,15 @@ function executablePrice(intent: RiskIntent): number | null {
   return intent.bestBid;
 }
 
+function paperDemo(mode: TradingMode): boolean {
+  return mode === TradingMode.PAPER;
+}
+
 /**
  * Pre-trade gate. EXIT is allowed under kill/stale/api/cooldown so the book
  * can flatten. LIVE is refused unless both live flags are on.
+ * PAPER is a demo account: halt rails (kill, cooldown, stale, API breaker,
+ * slippage, impact) do not block ENTER so strategies can be tested.
  */
 export function evaluateRisk(
   intent: RiskIntent,
@@ -90,12 +96,18 @@ export function evaluateRisk(
     checks.push(check("not_last_price", true, "fill is not lastPrice"));
   }
 
-  const killOk = !entry || !nextState.killSwitch;
+  const demo = paperDemo(intent.mode);
+  const killArmed = nextState.killSwitch;
+  const killOk = !entry || !killArmed || demo;
   checks.push(
     check(
       "kill_switch",
       killOk,
-      nextState.killSwitch ? (nextState.killSwitchReason ?? "armed") : "off",
+      killArmed
+        ? demo
+          ? `paper ignores (${nextState.killSwitchReason ?? "armed"})`
+          : (nextState.killSwitchReason ?? "armed")
+        : "off",
     ),
   );
   if (!killOk) {
@@ -106,8 +118,18 @@ export function evaluateRisk(
 
   const cooling =
     nextState.cooldownUntil !== null && intent.now.getTime() < nextState.cooldownUntil.getTime();
-  const cooldownOk = !entry || !cooling;
-  checks.push(check("cooldown", cooldownOk, cooling ? `until ${nextState.cooldownUntil?.toISOString()}` : "clear"));
+  const cooldownOk = !entry || !cooling || demo;
+  checks.push(
+    check(
+      "cooldown",
+      cooldownOk,
+      cooling
+        ? demo
+          ? `paper ignores until ${nextState.cooldownUntil?.toISOString()}`
+          : `until ${nextState.cooldownUntil?.toISOString()}`
+        : "clear",
+    ),
+  );
   if (!cooldownOk) {
     events.push(event(RiskEventType.COOLDOWN, "cooldown active"));
   }
@@ -115,13 +137,23 @@ export function evaluateRisk(
   const staleByAge =
     intent.dataAgeMs !== null && intent.dataAgeMs > limits.staleMs;
   const stale = nextState.staleData || staleByAge;
-  const staleOk = !entry || !stale;
-  checks.push(check("stale_data", staleOk, stale ? `ageMs=${intent.dataAgeMs}` : "fresh"));
+  const staleOk = !entry || !stale || demo;
+  checks.push(
+    check(
+      "stale_data",
+      staleOk,
+      stale
+        ? demo
+          ? `paper demo uses last book ageMs=${intent.dataAgeMs}`
+          : `ageMs=${intent.dataAgeMs}`
+        : "fresh",
+    ),
+  );
   if (!staleOk) {
     events.push(event(RiskEventType.STALE_DATA, "websocket or snapshot is stale"));
   }
 
-  const apiOk = !entry || !nextState.apiErrorBreaker;
+  const apiOk = !entry || !nextState.apiErrorBreaker || demo;
   checks.push(check("api_breaker", apiOk, nextState.apiErrorBreaker ? "open" : "closed"));
   if (!apiOk) {
     events.push(event(RiskEventType.API_ERROR, "API error breaker is open"));
@@ -165,19 +197,36 @@ export function evaluateRisk(
     events.push(event(RiskEventType.MAX_EXPOSURE, "total exposure exceeds bankroll"));
   }
 
-  const tteOk =
+  const tteMinOk =
     !entry ||
     intent.timeToExpirySec === null ||
     intent.timeToExpirySec >= limits.minTimeToExpirySec;
   checks.push(
     check(
       "min_time_to_expiry",
-      tteOk,
+      tteMinOk,
       `${intent.timeToExpirySec}s vs min ${limits.minTimeToExpirySec}s`,
     ),
   );
-  if (!tteOk) {
+  if (!tteMinOk) {
     events.push(event(RiskEventType.MIN_TIME_TO_EXPIRY, "too close to expiry"));
+  }
+
+  const tteMaxOk =
+    !entry ||
+    (intent.timeToExpirySec !== null &&
+      intent.timeToExpirySec <= limits.maxTimeToExpirySec);
+  checks.push(
+    check(
+      "max_time_to_expiry",
+      tteMaxOk,
+      intent.timeToExpirySec === null
+        ? "expiry unknown — not treating as settling today"
+        : `${intent.timeToExpirySec}s vs max ${limits.maxTimeToExpirySec}s`,
+    ),
+  );
+  if (!tteMaxOk) {
+    events.push(event(RiskEventType.MIN_TIME_TO_EXPIRY, "settlement is beyond the 24h horizon"));
   }
 
   const liqOk =
@@ -198,14 +247,22 @@ export function evaluateRisk(
   const slip =
     intent.estimatedSlippageBps ??
     (bookOk ? spreadBps(intent.bestBid!, intent.bestAsk!) : null);
-  const slipOk = !entry || slip === null || slip <= limits.maxSlippageBps;
-  checks.push(check("max_slippage", slipOk, `slippageBps=${slip}`));
+  const slipOk = !entry || slip === null || slip <= limits.maxSlippageBps || demo;
+  checks.push(
+    check(
+      "max_slippage",
+      slipOk,
+      demo && slip !== null && slip > limits.maxSlippageBps
+        ? `paper ignores slippageBps=${slip}`
+        : `slippageBps=${slip}`,
+    ),
+  );
   if (!slipOk) {
     events.push(event(RiskEventType.MAX_SLIPPAGE, "slippage above cap"));
   }
 
   const impact = intent.estimatedPriceImpact ?? 0;
-  const impactOk = !entry || impact <= limits.maxPriceImpact;
+  const impactOk = !entry || impact <= limits.maxPriceImpact || demo;
   checks.push(check("max_price_impact", impactOk, `impact=${impact}`));
   if (!impactOk) {
     events.push(event(RiskEventType.MAX_PRICE_IMPACT, "price impact above cap"));

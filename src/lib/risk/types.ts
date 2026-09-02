@@ -13,6 +13,7 @@ export interface RiskLimits {
   maxPriceImpact: number;
   minLiquidityUsdt: number;
   minTimeToExpirySec: number;
+  maxTimeToExpirySec: number;
   staleMs: number;
   cooldownMs: number;
   consecutiveLossesForCooldown: number;

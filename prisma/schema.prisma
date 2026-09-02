@@ -582,3 +582,56 @@ model RiskState {
   apiErrorBreaker    Boolean     @default(false)
   updatedAt          DateTime    @updatedAt
 }
+
+// ---------------------------------------------------------------------------
+// Live record sessions (no trading — feature tape for research)
+// ---------------------------------------------------------------------------
+
+model RecordSession {
+  id           String    @id @default(cuid())
+  status       String    @default("RUNNING")
+  startedAt    DateTime  @default(now())
+  stoppedAt    DateTime?
+  tickCount    Int       @default(0)
+  signalCount  Int       @default(0)
+  marketCount  Int       @default(0)
+  lastSampleAt DateTime?
+  workerPid    Int?
+  error        String?
+  createdAt    DateTime  @default(now())
+
+  ticks RecordTick[]
+
+  @@index([status, startedAt])
+}
+
+model RecordTick {
+  id                  String        @id @default(cuid())
+  sessionId           String
+  session             RecordSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  observedAt          DateTime
+  marketId            String
+  marketTitle         String
+  venueMarketId       String
+  symbol              String?
+  bestBid             Decimal?      @db.Decimal(38, 18)
+  bestAsk             Decimal?      @db.Decimal(38, 18)
+  chance              Decimal?      @db.Decimal(18, 10)
+  lastPrice           Decimal?      @db.Decimal(38, 18)
+  liquidity           Decimal?      @db.Decimal(38, 18)
+  spread              Decimal?      @db.Decimal(38, 18)
+  timeToExpirySec     Int?
+  liveBook            Boolean       @default(false)
+  underlyingPrice     Decimal?      @db.Decimal(38, 18)
+  underlyingReturn1m  Decimal?      @db.Decimal(18, 10)
+  underlyingReturn5m  Decimal?      @db.Decimal(18, 10)
+  underlyingReturn15m Decimal?      @db.Decimal(18, 10)
+  probabilityMean     Decimal?      @db.Decimal(18, 10)
+  probabilityStd      Decimal?      @db.Decimal(18, 10)
+  probabilityZ        Decimal?      @db.Decimal(18, 10)
+  signals             Json
+  createdAt           DateTime      @default(now())
+
+  @@index([sessionId, observedAt])
+  @@index([marketId, observedAt])
+}

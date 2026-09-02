@@ -19,6 +19,7 @@ import { evaluateRisk } from "@/lib/risk/evaluate";
 import { emptyRiskSnapshot } from "@/lib/risk/limits";
 import { recordClosedTrade } from "@/lib/risk/state";
 import type { RiskLimits } from "@/lib/risk/types";
+import { isExpiredAt, settlementPayoff } from "@/lib/markets/settlement";
 
 interface OpenPosition {
   marketId: string;
@@ -42,13 +43,8 @@ export function sortReplayEvents(events: ReplayEvent[]): ReplayEvent[] {
   });
 }
 
-function settlementPayoff(tick: MarketTick, underlyingPrice: number | null): number | null {
-  if (tick.startPrice === null || underlyingPrice === null) return null;
-  const up = underlyingPrice >= tick.startPrice;
-  const name = (tick.outcomeName ?? "").trim().toLowerCase();
-  if (name === "yes" || name === "up") return up ? 1 : 0;
-  if (name === "no" || name === "down") return up ? 0 : 1;
-  return null;
+function isExpired(tick: MarketTick, now: Date): boolean {
+  return isExpiredAt(now, tick.endDate, tick.timeToExpirySec);
 }
 
 function riskLimitsForBacktest(config: BacktestConfig): RiskLimits {
@@ -62,17 +58,12 @@ function riskLimitsForBacktest(config: BacktestConfig): RiskLimits {
     maxPriceImpact: config.maxPriceImpact,
     minLiquidityUsdt: config.minLiquidityUsdt,
     minTimeToExpirySec: config.minTimeToExpirySec,
+    maxTimeToExpirySec: 10 * 365 * 86_400,
     staleMs: 86_400_000,
     cooldownMs: 0,
     consecutiveLossesForCooldown: 1_000_000,
     liveTradingEnabled: false,
   };
-}
-
-function isExpired(tick: MarketTick, now: Date): boolean {
-  if (tick.timeToExpirySec !== null) return tick.timeToExpirySec <= 0;
-  if (tick.endDate) return now.getTime() >= tick.endDate.getTime();
-  return false;
 }
 
 export function runBacktestFold(options: {

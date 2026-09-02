@@ -54,7 +54,7 @@ export async function fetchOfficialPaperQuote(options: {
     return paperQuoteFromOfficial(official);
   } catch (error) {
     inc("quote.fail");
-    log.warn({ err: String(error), tokenId: options.tokenId }, "getQuote failed; no paper fill");
+    log.warn({ err: String(error), tokenId: options.tokenId }, "getQuote failed; paper fills from last book");
     return null;
   }
 }

@@ -7,6 +7,7 @@ import { redis } from "@/lib/db/redis";
 import { payloadHash, toJsonSafe } from "@/lib/binance/payload";
 import { childLogger } from "@/lib/logger";
 import { inc } from "@/lib/observability/metrics";
+import { keepLastExecutablePrices } from "@/lib/ingest/orderbook-merge";
 
 const log = childLogger({ component: "raw-ingest" });
 
@@ -42,14 +43,16 @@ export async function ingestRaw(record: IngestRecord): Promise<"stored" | "dupli
 
   let storedInDb = false;
   try {
-    await prisma.rawIngestEvent.create({ data: row });
-    storedInDb = true;
-  } catch (error) {
-    const code = (error as { code?: string }).code;
-    if (code === "P2002") {
+    const created = await prisma.rawIngestEvent.createMany({
+      data: [row],
+      skipDuplicates: true,
+    });
+    if (created.count === 0) {
       inc("ingest.result", { outcome: "duplicate" });
       return "duplicate";
     }
+    storedInDb = true;
+  } catch (error) {
     log.warn({ channel: record.channel, err: String(error) }, "postgres ingest failed, writing file");
   }
 
@@ -82,10 +85,18 @@ async function writeJsonl(channel: string, row: unknown): Promise<void> {
 
 export async function cacheLiveOrderbook(marketId: number, snapshot: unknown): Promise<void> {
   try {
-    await redis.set(
-      `live:prediction:orderbook:${marketId}`,
-      JSON.stringify(toJsonSafe(snapshot)),
-    );
+    const key = `live:prediction:orderbook:${marketId}`;
+    let previous: Record<string, unknown> | null = null;
+    try {
+      const raw = await redis.get(key);
+      if (raw) previous = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      previous = null;
+    }
+    const incoming =
+      snapshot && typeof snapshot === "object" ? (snapshot as Record<string, unknown>) : {};
+    const merged = keepLastExecutablePrices(previous, incoming);
+    await redis.set(key, JSON.stringify(toJsonSafe(merged)));
     await redis.set(
       "ingest:health:prediction.ws.orderbook",
       JSON.stringify({ at: new Date().toISOString(), marketId }),

@@ -12,6 +12,7 @@ import { loadRiskState, persistRiskDecision, persistRiskSnapshot } from "@/lib/r
 import { recordClosedTrade } from "@/lib/risk/state";
 import { createStrategy } from "@/lib/strategy";
 import { readLiveOrderbook } from "@/lib/ingest/raw-store";
+import { tradableMarketQuery } from "@/lib/markets/horizon";
 import { sleep } from "@/lib/binance/rate-limit";
 import { inc } from "@/lib/observability/metrics";
 import { recordSystemEvent } from "@/lib/observability/events";
@@ -19,6 +20,8 @@ import {
   decidePaperAction,
   fetchOfficialPaperQuote,
   hasPredictionWallet,
+  readPaperEntryMode,
+  shouldSkipPeerEnter,
   persistPaperTrade,
   type PaperBook,
   type PaperQuote,
@@ -30,7 +33,7 @@ import {
   resolveWalletId,
   type LiveTradeContext,
 } from "@/lib/live";
-import { tickFromSnapshot } from "./service";
+import { tickFromSnapshot } from "@/lib/normalize/tick";
 
 const log = childLogger({ component: "live-worker" });
 
@@ -45,8 +48,10 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
     return { enabled: 0, considered: 0, submitted: 0 };
   }
 
+  const entryMode = await readPaperEntryMode();
+
   const markets = await prisma.market.findMany({
-    take: env.COLLECTOR_MAX_TOPICS,
+    ...tradableMarketQuery(),
     include: {
       topic: true,
       outcomes: true,
@@ -138,6 +143,20 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
       });
       const action = decidePaperAction(signal.direction, open?.side ?? null);
       if (action === "HOLD") continue;
+
+      if (action === "ENTER") {
+        const peer = await prisma.position.findFirst({
+          where: {
+            mode: TradingMode.LIVE,
+            status: "OPEN",
+            marketId: market.id,
+            tokenId,
+            NOT: { strategyId: row.id },
+          },
+          select: { id: true },
+        });
+        if (shouldSkipPeerEnter(entryMode, action, Boolean(peer))) continue;
+      }
 
       const executable =
         action === "EXIT" && open?.side === OrderSide.BUY ? tick.bestBid : tick.bestAsk;

@@ -42,7 +42,12 @@ export interface HealthSnapshot {
   metrics: MetricsSnapshot;
 }
 
-function parseHeartbeat(channel: string, raw: string | null, now: number, staleMs: number): CollectorHeartbeat {
+export function parseHeartbeat(
+  channel: string,
+  raw: string | null,
+  now: number,
+  staleMs: number,
+): CollectorHeartbeat {
   if (!raw) {
     return { channel, lastAt: null, ageMs: null, stale: true };
   }
@@ -57,6 +62,42 @@ function parseHeartbeat(channel: string, raw: string | null, now: number, staleM
   } catch {
     return { channel, lastAt: null, ageMs: null, stale: true };
   }
+}
+
+export async function loadCollectorHeartbeats(timeoutMs = 1_500): Promise<CollectorHeartbeat[]> {
+  try {
+    const now = Date.now();
+    const keys = await withTimeout(redis.keys("ingest:health:*"), timeoutMs, "redis-keys");
+    return Promise.all(
+      keys.sort().flatMap((key) => {
+        const channel = key.replace(/^ingest:health:/, "");
+        if (!isLiveCollectorChannel(channel)) return [];
+        return [
+          withTimeout(redis.get(key), timeoutMs, "redis-get").then((raw) =>
+            parseHeartbeat(channel, raw, now, env.WS_STALE_MS),
+          ),
+        ];
+      }),
+    );
+  } catch (error) {
+    log.warn({ err: String(error) }, "collector heartbeat read failed");
+    return [];
+  }
+}
+
+export function collectorsAreFresh(collectors: CollectorHeartbeat[]): boolean {
+  const prediction = collectors.find((row) => row.channel === "prediction.ws.orderbook");
+  return Boolean(prediction && !prediction.stale);
+}
+
+/** Spot ticker and prediction orderbook streams — not one-shot REST detail calls. */
+export function isLiveCollectorChannel(channel: string): boolean {
+  return channel === "prediction.ws.orderbook" || channel.startsWith("spot.ws.ticker.");
+}
+
+/** Spot ticker WS is up — another process already owns live collection. */
+export function spotStreamIsLive(collectors: CollectorHeartbeat[]): boolean {
+  return collectors.some((row) => row.channel.startsWith("spot.ws.ticker.") && !row.stale);
 }
 
 export async function collectHealth(timeoutMs = 1_500): Promise<HealthSnapshot> {
@@ -74,18 +115,7 @@ export async function collectHealth(timeoutMs = 1_500): Promise<HealthSnapshot> 
   }
 
   if (cache === "ok") {
-    try {
-      const keys = await withTimeout(redis.keys("ingest:health:*"), timeoutMs, "redis-keys");
-      collectors = await Promise.all(
-        keys.sort().map(async (key) => {
-          const raw = await withTimeout(redis.get(key), timeoutMs, "redis-get");
-          const channel = key.replace(/^ingest:health:/, "");
-          return parseHeartbeat(channel, raw, now, env.WS_STALE_MS);
-        }),
-      );
-    } catch (error) {
-      log.warn({ err: String(error) }, "collector heartbeat read failed");
-    }
+    collectors = await loadCollectorHeartbeats(timeoutMs);
   }
 
   try {
@@ -130,6 +160,7 @@ export async function collectHealth(timeoutMs = 1_500): Promise<HealthSnapshot> 
     hasWallet,
     hasPaperKeys,
     hasLiveKeys,
+    database,
     redis: cache,
     collectors,
     risk,

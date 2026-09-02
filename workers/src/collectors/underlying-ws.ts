@@ -8,7 +8,7 @@ import { insertNormalizedUnderlying } from "@/lib/normalize/store";
 const log = childLogger({ component: "collector-underlying-ws" });
 const lastPersistAt = new Map<string, number>();
 
-export async function startUnderlyingWsCollector(): Promise<void> {
+export async function startUnderlyingWsCollector(options: { exitOnSignal?: boolean } = {}): Promise<void> {
   const symbols = env.COLLECTOR_UNDERLYING_SYMBOLS;
   const adapter = new OfficialSpotMarketDataAdapter();
 
@@ -65,6 +65,11 @@ export async function startUnderlyingWsCollector(): Promise<void> {
       });
     },
   );
+
+  if (options.exitOnSignal === false) {
+    void stop;
+    return;
+  }
 
   const shutdown = async () => {
     log.info("stopping underlying websocket collector");
