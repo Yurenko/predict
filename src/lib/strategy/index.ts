@@ -5,7 +5,7 @@ export {
   registerStrategy,
   registeredStrategySlugs,
 } from "@/lib/strategy/registry";
-export { createMomentumLagStrategy } from "@/lib/strategy/momentum-lag";
+export { createMomentumLagStrategy, spotWindowSide } from "@/lib/strategy/momentum-lag";
 export { createMeanReversionStrategy } from "@/lib/strategy/mean-reversion";
 export { createFairValueStrategy } from "@/lib/strategy/fair-value";
 export { evaluateStrategies, loadResearchStrategies, researchStrategyOrder } from "@/lib/strategy/evaluate";

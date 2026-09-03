@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StrategyContext } from "@/lib/types/domain";
-import { createMomentumLagStrategy } from "./momentum-lag";
+import { createMomentumLagStrategy, spotWindowSide } from "./momentum-lag";
 import { createMeanReversionStrategy } from "./mean-reversion";
 import { createFairValueStrategy } from "./fair-value";
 import { evaluateStrategies, loadResearchStrategies } from "./evaluate";
@@ -23,6 +23,7 @@ function ctx(over: Partial<StrategyContext> = {}): StrategyContext {
     underlyingSymbol: "BTCUSDT",
     underlyingPrice: 100,
     startPrice: 100,
+    outcomeName: "Up",
     volume: 1,
     features: {
       underlyingReturn1m: null,
@@ -78,28 +79,103 @@ describe("estimateCosts", () => {
   });
 });
 
-describe("underlying-momentum-lag", () => {
-  const strategy = createMomentumLagStrategy({ minNetEdge: 0.02, safetyMargin: 0 });
+describe("spotWindowSide", () => {
+  it("follows the candle vs window open", () => {
+    expect(
+      spotWindowSide({
+        startPrice: 100,
+        spot: 99.8,
+        return1m: -0.001,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+      })?.side,
+    ).toBe("down");
+    expect(
+      spotWindowSide({
+        startPrice: 100,
+        spot: 100.2,
+        return1m: 0.001,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+      })?.side,
+    ).toBe("up");
+  });
 
-  it("buys when underlying already rallied and the ask has not caught up", () => {
+  it("follows the 1m reversal after the window already moved the other way", () => {
+    expect(
+      spotWindowSide({
+        startPrice: 100,
+        spot: 100.3,
+        return1m: -0.002,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+      })?.side,
+    ).toBe("down");
+    expect(
+      spotWindowSide({
+        startPrice: 100,
+        spot: 99.7,
+        return1m: 0.002,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+      })?.side,
+    ).toBe("up");
+  });
+
+  it("stays out when the candle is still at the open", () => {
+    expect(
+      spotWindowSide({
+        startPrice: 100,
+        spot: 100,
+        return1m: 0,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("underlying-momentum-lag", () => {
+  const strategy = createMomentumLagStrategy({ safetyMargin: 0 });
+
+  it("buys Up when spot is above this window start and 1m agrees", () => {
     const signal = strategy.evaluate(
       ctx({
+        startPrice: 100,
+        underlyingPrice: 100.4,
         bestAsk: 0.46,
         bestBid: 0.44,
         lastPrice: 0.99,
-        features: { underlyingReturn5m: 0.03 } as StrategyContext["features"],
+        outcomeName: "Up",
+        features: { underlyingReturn1m: 0.002 } as StrategyContext["features"],
       }),
     );
     expect(signal?.direction).toBe("BUY");
-    expect(signal?.fairProbability).toBeGreaterThan(0.7);
+    expect(signal?.reason).toMatch(/старт|спот/i);
     expect(signal?.reason).not.toMatch(/0\.99/);
   });
 
-  it("stays flat when the underlying has not moved", () => {
+  it("sells Up (bets Down) when spot is below this window start", () => {
     const signal = strategy.evaluate(
       ctx({
+        startPrice: 100,
+        underlyingPrice: 99.6,
+        bestAsk: 0.46,
+        bestBid: 0.44,
+        outcomeName: "Up",
+        features: { underlyingReturn1m: -0.002 } as StrategyContext["features"],
+      }),
+    );
+    expect(signal?.direction).toBe("SELL");
+  });
+
+  it("stays flat when the underlying has not left the window open", () => {
+    const signal = strategy.evaluate(
+      ctx({
+        startPrice: 100,
+        underlyingPrice: 100,
         bestAsk: 0.3,
-        features: { underlyingReturn5m: 0 } as StrategyContext["features"],
+        features: { underlyingReturn1m: 0, underlyingReturn5m: 0 } as StrategyContext["features"],
       }),
     );
     expect(signal).toBeNull();
@@ -210,8 +286,8 @@ describe("evaluateStrategies", () => {
         bestBid: 0.44,
         lastPrice: 0.99,
         startPrice: 100,
-        underlyingPrice: 100,
-        features: { underlyingReturn5m: 0.03 } as StrategyContext["features"],
+        underlyingPrice: 100.4,
+        features: { underlyingReturn1m: 0.002 } as StrategyContext["features"],
       }),
     );
     expect(signal?.strategyId).toBe("underlying-momentum-lag");

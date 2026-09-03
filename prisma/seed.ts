@@ -6,16 +6,17 @@ const strategies = [
   {
     slug: "underlying-momentum-lag",
     kind: StrategyKind.UNDERLYING_MOMENTUM_LAG,
-    name: "Underlying Momentum → Prediction Lag",
-    version: "0.1.0",
+    name: "Underlying vs window start (5m/15m candle)",
+    version: "0.2.0",
     enabled: false,
     description:
-      "Trade when the underlying has already moved and the prediction market has not fully repriced. Research priority #1.",
+      "5m/15m Up/Down: if BTC/ETH is below this window's startPrice → Down; above → Up. If the last 1m already reversed against that candle, follow the 1m. Does not mix 15m lookback into a 5m contract.",
     parameters: {
-      returns: ["1m", "5m", "15m"],
-      minNetEdge: 0.02,
+      minVsStart: 0.0005,
+      minReturn1m: 0.0003,
+      maxBuyAsk: 0.75,
+      minSellBid: 0.25,
       minTimeToExpirySec: 60,
-      lookbackMinutes: 15,
     },
   },
   {

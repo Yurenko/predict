@@ -711,7 +711,9 @@ export function StrategiesPanel() {
     <Card title="Дослідницькі стратегії (увімкнення лише для paper worker)">
       <p className="mb-4 text-xs text-zinc-500">
         Live з цього екрана не вмикається. Увімкнені стратегії торгують лише на віртуальному bankroll
-        після Старт на Огляді. Реальні гроші не списуються.
+        після Старт на Огляді. Реальні гроші не списуються. Underlying vs window start: свічка 5m/15m
+        відносно свого open (startPrice). Нижче старту → Down, вище → Up. Якщо 1м уже розвернулась —
+        йдемо за 1м, а не за старим 15м lookback.
       </p>
       <div className="mb-5 rounded-xl border border-zinc-800 px-3 py-3">
         <p className="mb-2 text-sm text-zinc-200">Вхід на одному контракті</p>

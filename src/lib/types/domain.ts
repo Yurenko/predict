@@ -41,6 +41,8 @@ export interface StrategyContext {
   underlyingSymbol: string | null;
   underlyingPrice: number | null;
   startPrice: number | null;
+  /** Yes/Up vs No/Down — needed to map spot direction onto this token. */
+  outcomeName?: string | null;
   volume: number | null;
   /** Rolling features computed only from observations with t <= now. */
   features: {

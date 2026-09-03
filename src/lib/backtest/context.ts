@@ -60,6 +60,7 @@ export function buildStrategyContext(options: {
     underlyingSymbol: tick.symbol,
     underlyingPrice: underlying?.price ?? null,
     startPrice: tick.startPrice,
+    outcomeName: tick.outcomeName,
     volume: underlying?.volume ?? null,
     features: {
       underlyingReturn1m: returnOver(options.underlyings, now, MINUTE),
