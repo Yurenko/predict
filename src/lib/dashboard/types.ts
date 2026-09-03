@@ -193,6 +193,7 @@ export interface DashboardAccount {
   walletPreview: string | null;
   hasWallet: boolean;
   hasPaperKeys: boolean;
+  hasLiveKeys: boolean;
   bankrollUsdt: number;
   accountType: string;
 }

@@ -7,7 +7,7 @@ export default function StrategiesPage() {
         <h1 className="text-3xl font-semibold tracking-tight">Стратегії</h1>
         <p className="max-w-2xl text-sm leading-6 text-zinc-400">
           Увімкнення пише Strategy.enabled. Перемикач входу: усі стратегії або одна на контракт.
-          Після Старту на Огляді paper підхопить на наступному циклі.
+          Після Старту на Огляді цикл (paper або live) підхопить на наступному кроці.
         </p>
       </header>
       <StrategiesPanel />

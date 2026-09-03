@@ -1,7 +1,9 @@
-import { env } from "@/lib/config/env";
+import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { prisma } from "@/lib/db/prisma";
 import { redis } from "@/lib/db/redis";
 import { childLogger } from "@/lib/logger";
+import { disarmKillSwitch } from "@/lib/risk/state";
+import { loadRiskState, persistRiskSnapshot } from "@/lib/risk/persist";
 import {
   RECORD_CONTROL_KEY,
   emptyRecordControl,
@@ -53,6 +55,17 @@ export async function closeRunningSessions(reason?: string): Promise<void> {
 
 export async function startRecordSession(): Promise<{ control: RecordControl; sessionId: string }> {
   await closeRunningSessions("superseded");
+  if (isLiveTradingEnabled()) {
+    try {
+      const state = await loadRiskState();
+      if (state.killSwitch || state.cooldownUntil) {
+        await persistRiskSnapshot(disarmKillSwitch(state));
+        log.info("live Start: kill switch default off (arm from /risk when needed)");
+      }
+    } catch (error) {
+      log.warn({ err: String(error) }, "live Start kill disarm skipped");
+    }
+  }
   const session = await prisma.recordSession.create({
     data: { status: "RUNNING" },
   });
@@ -105,6 +118,7 @@ export function recordAccount() {
     walletPreview: walletPreviewSafe(env.BINANCE_PREDICTION_WALLET_ADDRESS),
     hasWallet: env.BINANCE_PREDICTION_WALLET_ADDRESS.trim().length > 0,
     hasPaperKeys: Boolean(env.BINANCE_PAPER_API_KEY && env.BINANCE_PAPER_API_SECRET),
+    hasLiveKeys: Boolean(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET),
     bankrollUsdt: env.BANKROLL_USDT,
     accountType: env.BINANCE_PREDICTION_ACCOUNT_TYPE,
   };

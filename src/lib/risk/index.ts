@@ -2,6 +2,7 @@ export { evaluateRisk } from "@/lib/risk/evaluate";
 export { limitsFromEnv, emptyRiskSnapshot } from "@/lib/risk/limits";
 export {
   armKillSwitch,
+  disarmKillSwitch,
   noteApiError,
   noteStaleData,
   recordClosedTrade,

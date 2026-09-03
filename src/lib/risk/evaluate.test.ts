@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TradingMode } from "@prisma/client";
 import { evaluateRisk } from "./evaluate";
 import { emptyRiskSnapshot } from "./limits";
-import { recordClosedTrade } from "./state";
+import { disarmKillSwitch, recordClosedTrade } from "./state";
 import type { RiskIntent, RiskLimits, RiskSnapshot } from "./types";
 
 function limits(over: Partial<RiskLimits> = {}): RiskLimits {
@@ -78,7 +78,7 @@ describe("evaluateRisk", () => {
     ).toBe(true);
   });
 
-  it("blocks LIVE ENTER on stale data, cooldown, and API breaker; PAPER demo still enters", () => {
+  it("does not block LIVE ENTER on stale, cooldown, or API breaker while kill is off", () => {
     const liveLimits = limits({ liveTradingEnabled: true });
     expect(
       evaluateRisk(
@@ -86,7 +86,7 @@ describe("evaluateRisk", () => {
         state(liveLimits),
         liveLimits,
       ).allowed,
-    ).toBe(false);
+    ).toBe(true);
     expect(evaluateRisk(intent({ dataAgeMs: 20_000 }), state(lim), lim).allowed).toBe(true);
     expect(evaluateRisk(intent(), state(lim, { apiErrorBreaker: true }), lim).allowed).toBe(
       true,
@@ -97,7 +97,7 @@ describe("evaluateRisk", () => {
         state(liveLimits, { apiErrorBreaker: true }),
         liveLimits,
       ).allowed,
-    ).toBe(false);
+    ).toBe(true);
     expect(
       evaluateRisk(
         intent(),
@@ -111,7 +111,7 @@ describe("evaluateRisk", () => {
         state(liveLimits, { cooldownUntil: new Date("2026-01-01T00:15:00.000Z") }),
         liveLimits,
       ).allowed,
-    ).toBe(false);
+    ).toBe(true);
     expect(
       evaluateRisk(intent({ action: "EXIT", dataAgeMs: 20_000 }), state(lim, { staleData: true }), lim)
         .allowed,
@@ -157,12 +157,13 @@ describe("evaluateRisk", () => {
 });
 
 describe("recordClosedTrade", () => {
-  it("arms kill switch on max daily loss and max drawdown in LIVE", () => {
-    const lim = limits({ maxDailyLossPct: 3, maxDrawdownPct: 10 });
+  it("does not auto-arm kill switch after LIVE losses; kill is manual only", () => {
+    const lim = limits({ maxDailyLossPct: 3, maxDrawdownPct: 10, consecutiveLossesForCooldown: 1 });
     const start = emptyRiskSnapshot(lim, TradingMode.LIVE);
     const loss = recordClosedTrade(start, -40, new Date("2026-01-01T00:00:00.000Z"), lim);
-    expect(loss.state.killSwitch).toBe(true);
-    expect(loss.tripped).toContain("MAX_DAILY_LOSS");
+    expect(loss.state.killSwitch).toBe(false);
+    expect(loss.state.cooldownUntil).toBeNull();
+    expect(loss.tripped).toEqual([]);
 
     const draw = recordClosedTrade(
       emptyRiskSnapshot(lim, TradingMode.LIVE),
@@ -170,8 +171,9 @@ describe("recordClosedTrade", () => {
       new Date("2026-01-01T00:00:00.000Z"),
       lim,
     );
-    expect(draw.state.killSwitch).toBe(true);
-    expect(draw.tripped).toContain("MAX_DRAWDOWN");
+    expect(draw.state.killSwitch).toBe(false);
+    expect(draw.tripped).toEqual([]);
+    expect(draw.state.currentDrawdown).toBeGreaterThan(0);
   });
 
   it("does not arm kill or cooldown after PAPER losses", () => {
@@ -200,5 +202,19 @@ describe("recordClosedTrade", () => {
       lim,
     );
     expect(day2.state.dailyPnl).toBe(1);
+  });
+
+  it("disarmKillSwitch turns kill and cooldown off", () => {
+    const lim = limits();
+    const armed = {
+      ...emptyRiskSnapshot(lim, TradingMode.LIVE),
+      killSwitch: true,
+      killSwitchReason: "manual_dashboard",
+      cooldownUntil: new Date("2026-01-01T00:15:00.000Z"),
+    };
+    const off = disarmKillSwitch(armed);
+    expect(off.killSwitch).toBe(false);
+    expect(off.killSwitchReason).toBeNull();
+    expect(off.cooldownUntil).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { OrderSide, SystemEventLevel, TradingMode } from "@prisma/client";
+import { OrderSide, TradingMode } from "@prisma/client";
 import { OfficialPredictionAdapter } from "@/lib/binance/prediction-adapter";
 import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { prisma } from "@/lib/db/prisma";
@@ -14,8 +14,6 @@ import { createStrategy } from "@/lib/strategy";
 import { readLiveOrderbook } from "@/lib/ingest/raw-store";
 import { tradableMarketQuery } from "@/lib/markets/horizon";
 import { sleep } from "@/lib/binance/rate-limit";
-import { inc } from "@/lib/observability/metrics";
-import { recordSystemEvent } from "@/lib/observability/events";
 import {
   decidePaperAction,
   fetchOfficialPaperQuote,
@@ -30,7 +28,6 @@ import {
 import {
   executeLiveTrade,
   reconcileLiveOrders,
-  resolveWalletId,
   type LiveTradeContext,
 } from "@/lib/live";
 import { tickFromSnapshot } from "@/lib/normalize/tick";
@@ -292,7 +289,7 @@ export async function startLiveTrader(): Promise<void> {
       liveTradingEnabled: isLiveTradingEnabled(),
       hasWallet: hasPredictionWallet(),
     },
-    "starting live trader (placeOrder only when both live flags are on)",
+    "starting live trader (placeOrder only after dashboard Start, when both live flags are on)",
   );
 
   if (!isLiveTradingEnabled()) {
@@ -303,50 +300,6 @@ export async function startLiveTrader(): Promise<void> {
     } while (true);
   }
 
-  let venue: OfficialPredictionAdapter;
-  try {
-    venue = OfficialPredictionAdapter.fromEnv();
-  } catch (error) {
-    log.error({ err: String(error) }, "live adapter unavailable; idle");
-    do {
-      if (env.COLLECTOR_ONCE) return;
-      await sleep(env.LIVE_LOOP_INTERVAL_MS);
-    } while (true);
-  }
-
-  const walletAddress = env.BINANCE_PREDICTION_WALLET_ADDRESS.trim();
-  const walletId = await resolveWalletId({
-    walletAddress,
-    configuredWalletId: env.BINANCE_PREDICTION_WALLET_ID,
-    listWallets: () => venue.listPredictionWallets(),
-  });
-  if (!walletId) {
-    log.error("walletId missing; set BINANCE_PREDICTION_WALLET_ID or register the wallet; idle");
-    do {
-      if (env.COLLECTOR_ONCE) return;
-      await sleep(env.LIVE_LOOP_INTERVAL_MS);
-    } while (true);
-  }
-
-  const ctx: LiveTradeContext = {
-    walletAddress,
-    walletId,
-    accountType: env.BINANCE_PREDICTION_ACCOUNT_TYPE,
-  };
-
-  do {
-    try {
-      await runLiveOnce(ctx, venue);
-    } catch (error) {
-      inc("live.cycle_error");
-      log.error({ err: String(error) }, "live cycle failed");
-      await recordSystemEvent({
-        level: SystemEventLevel.ERROR,
-        component: "live-worker",
-        message: String(error),
-      });
-    }
-    if (env.COLLECTOR_ONCE) return;
-    await sleep(env.LIVE_LOOP_INTERVAL_MS);
-  } while (true);
+  const { runRecordLoop } = await import("@/lib/record/loop");
+  await runRecordLoop({ exitOnSignal: true });
 }

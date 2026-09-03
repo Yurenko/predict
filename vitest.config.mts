@@ -8,6 +8,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    env: {
+      LIVE_TRADING_ENABLED: "false",
+      TRADING_MODE: "PAPER",
+    },
   },
   resolve: {
     alias: {

@@ -8,9 +8,9 @@ Research-first платформа для Binance Wallet Prediction Markets: зб
 
 **Phase 11 — Optional live execution**
 
-Окремий worker `npm run worker:live-exec` може викликати офіційний `placeOrder` (`/sapi/v1/w3w/wallet/prediction/trade/place-order-bundle`) лише коли **обидва** прапорці `LIVE_TRADING_ENABLED=true` і `TRADING_MODE=LIVE`. Paper worker як і раніше **ніколи** не шле ордер. Docker/ECS лишають live вимкненим. З UI live не вмикається.
+Локально той самий дашборд, що й paper: `npm run dev` (paper) або `npm run dev:live` (live). Після відкриття UI — стратегії, **Старт** і **Стоп**. `placeOrder` викликається лише після Старт, коли команда `dev:live` увімкнула обидва прапорці. Docker/ECS лишають live вимкненим. З UI live-прапорці змінити не можна.
 
-Далі: paper + walk-forward, перш ніж вмикати прапорці.
+Далі: paper + walk-forward, перш ніж запускати `npm run dev:live`.
 
 Повний план: [docs/architecture.md](docs/architecture.md).
 
@@ -28,6 +28,8 @@ docker compose up -d
 npx prisma migrate dev --name init
 npx prisma db seed
 npm run dev
+# live (той самий UI, реальні ордери після Старт):
+# npm run dev:live
 ```
 
 Dashboard: [http://localhost:3000](http://localhost:3000)  
@@ -56,7 +58,7 @@ npm run worker:backtest -- configs/backtest.fair-value.json
 npm run worker:strategy
 npm run worker:risk
 npm run worker:paper          # paper fills vs getQuote + book; never placeOrder
-npm run worker:live-exec      # live placeOrder only if BOTH live flags are on
+npm run worker:live-exec      # same Start/Stop loop as dashboard; idle until Start
 npm run worker:observe        # health / alerts / metrics snapshot
 ```
 
@@ -70,8 +72,8 @@ npm run worker:observe        # health / alerts / metrics snapshot
 
 | Змінна | Значення за замовчуванням | Примітка |
 | --- | --- | --- |
-| `LIVE_TRADING_ENABLED` | `false` | Live не вмикається без цього |
-| `TRADING_MODE` | `PAPER` | Потрібні обидва: `true` + `LIVE` |
+| `LIVE_TRADING_ENABLED` | `false` | Локально `npm run dev` форсить PAPER, `npm run dev:live` — LIVE |
+| `TRADING_MODE` | `PAPER` | Потрібні обидва: `true` + `LIVE` (ставить `dev:live`) |
 | `BINANCE_PAPER_API_KEY` | порожньо | Тільки сервер |
 | `BINANCE_LIVE_API_KEY` | порожньо | Окремі credentials від paper |
 

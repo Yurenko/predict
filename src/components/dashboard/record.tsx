@@ -10,6 +10,7 @@ import { Pager } from "@/components/dashboard/pager";
 import { LEDGER_PAGE_SIZE, ledgerPageCount, slicePage } from "@/lib/dashboard/pages";
 
 function statusLabel(data: RecordPayload): { text: string; tone: "ok" | "warn" | "bad" | "muted"; hint: string } {
+  const live = data.liveTradingEnabled;
   if (data.running && !data.workerAlive) {
     return {
       text: "Воркер зупинився",
@@ -18,7 +19,11 @@ function statusLabel(data: RecordPayload): { text: string; tone: "ok" | "warn" |
     };
   }
   if (data.running && data.lastSampleAt) {
-    return { text: "Записує", tone: "ok", hint: `останній тік ${fmtAge(data.lastSampleAt)}` };
+    return {
+      text: live ? "LIVE торгівля" : "Записує",
+      tone: live ? "bad" : "ok",
+      hint: `останній тік ${fmtAge(data.lastSampleAt)}`,
+    };
   }
   if (data.running && data.workerAlive) {
     return { text: "Запуск…", tone: "warn", hint: "піднімає WebSocket у цьому процесі, без окремого вікна" };
@@ -26,7 +31,13 @@ function statusLabel(data: RecordPayload): { text: string; tone: "ok" | "warn" |
   if (data.collecting) {
     return { text: "Підключено", tone: "ok", hint: "потік є, запис зупинено" };
   }
-  return { text: "Не записує", tone: "muted", hint: "натисніть Старт — paper на віртуальному bankroll, без Binance placeOrder" };
+  return {
+    text: "Не записує",
+    tone: "muted",
+    hint: live
+      ? "натисніть Старт — реальні placeOrder на біржу"
+      : "натисніть Старт — paper на віртуальному bankroll, без Binance placeOrder",
+  };
 }
 
 export function useRecordFeed() {
@@ -76,20 +87,31 @@ export function RecordControls() {
   const { data, error, busy, control, refresh } = useRecordFeed();
   if (!data) {
     return (
-      <Card title="Paper запис (віртуальні гроші)">
+      <Card title="Запис">
         <Empty>{error ? `Не вдалося прочитати запис: ${error}` : "Завантаження…"}</Empty>
       </Card>
     );
   }
   const status = statusLabel(data);
+  const live = data.liveTradingEnabled;
+  const keysReady = live ? data.account.hasLiveKeys : data.account.hasPaperKeys;
   return (
-      <Card title="Paper запис (віртуальні гроші)">
+      <Card title={live ? "LIVE торгівля (реальні гроші)" : "Paper запис (віртуальні гроші)"}>
       <div className="mb-4 max-w-2xl space-y-2 text-sm leading-6 text-zinc-300">
-        <p>
-          Старт пише live-дані і крутить paper-цикл: стратегія → сигнал → віртуальний ордер на
-          bankroll {fmtUsd(data.account.bankrollUsdt)}.{" "}
-          <span className="text-zinc-100">Binance placeOrder не викликається, реальні гроші не списуються.</span>
-        </p>
+        {live ? (
+          <p>
+            Той самий Старт/Стоп, що в paper. Після Старт цикл: стратегія → сигнал → офіційний
+            placeOrder на bankroll {fmtUsd(data.account.bankrollUsdt)}.{" "}
+            <span className="text-rose-300">Реальні гроші списуються з гаманця Binance.</span> Стоп
+            зупиняє нові ордери.
+          </p>
+        ) : (
+          <p>
+            Старт пише live-дані і крутить paper-цикл: стратегія → сигнал → віртуальний ордер на
+            bankroll {fmtUsd(data.account.bankrollUsdt)}.{" "}
+            <span className="text-zinc-100">Binance placeOrder не викликається, реальні гроші не списуються.</span>
+          </p>
+        )}
         <p className="text-xs leading-5 text-zinc-500">
           Дивіться вкладки Сигнали, Ордери і Позиції. FAILED з причиною missing_quote / no_executable_book
           — це теж «як працює»: спроба була, філ без офіційного getQuote не симулюємо.
@@ -100,13 +122,19 @@ export function RecordControls() {
           type="button"
           disabled={busy || (data.running && data.workerAlive)}
           onClick={() => void control("start")}
-          className="rounded-lg border border-emerald-800 bg-emerald-950 px-4 py-2 text-sm text-emerald-200 hover:bg-emerald-900 disabled:opacity-40"
+          className={
+            live
+              ? "rounded-lg border border-rose-800 bg-rose-950 px-4 py-2 text-sm text-rose-200 hover:bg-rose-900 disabled:opacity-40"
+              : "rounded-lg border border-emerald-800 bg-emerald-950 px-4 py-2 text-sm text-emerald-200 hover:bg-emerald-900 disabled:opacity-40"
+          }
         >
           {busy && !(data.running && data.workerAlive)
             ? "Запуск…"
             : data.running && !data.workerAlive
               ? "Перезапустити"
-              : "Старт"}
+              : live
+                ? "Старт LIVE"
+                : "Старт"}
         </button>
         <button
           type="button"
@@ -126,14 +154,14 @@ export function RecordControls() {
         <Stat
           label="Рахунок"
           value={data.account.walletPreview ?? "не заданий"}
-          hint={`${data.account.accountType} · paper bankroll ${fmtUsd(data.account.bankrollUsdt)}`}
+          hint={`${data.account.accountType} · ${live ? "live" : "paper"} bankroll ${fmtUsd(data.account.bankrollUsdt)}`}
           tone={data.account.hasWallet ? "ok" : "warn"}
         />
         <Stat
-          label="Ключі paper"
-          value={data.account.hasPaperKeys ? "є" : "немає"}
-          hint="paper getQuote для філу; placeOrder ніколи"
-          tone={data.account.hasPaperKeys ? "ok" : "warn"}
+          label={live ? "Ключі live" : "Ключі paper"}
+          value={keysReady ? "є" : "немає"}
+          hint={live ? "BINANCE_LIVE_* для placeOrder" : "paper getQuote для філу; placeOrder ніколи"}
+          tone={keysReady ? "ok" : "warn"}
         />
         <Stat
           label="Воркер"
@@ -151,10 +179,10 @@ export function RecordControls() {
           }
         />
         <Stat
-          label="Paper цикл"
+          label={live ? "Live цикл" : "Paper цикл"}
           value={
             data.paper
-              ? `${data.paper.filled} філів / ${data.paper.considered} ринків`
+              ? `${data.paper.filled} ${live ? "ордерів" : "філів"} / ${data.paper.considered} ринків`
               : "ще не було"
           }
           hint={

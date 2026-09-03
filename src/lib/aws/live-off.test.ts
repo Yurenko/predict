@@ -16,6 +16,16 @@ describe("phase 10 live-off AWS guards", () => {
     expect(CURRENT_PHASE).toBe(11);
     expect(emptyDashboard().phase).toBe(11);
     expect(emptyDashboard().liveTradingEnabled).toBe(false);
+    expect(emptyDashboard().account.hasLiveKeys).toBeTypeOf("boolean");
+  });
+
+  it("local dashboard scripts choose paper vs live; Docker/ECS stay false", () => {
+    const pkg = read("package.json");
+    expect(pkg).toMatch(/"dev": "node scripts\/dev.mjs"/);
+    expect(pkg).toMatch(/"dev:live": "node scripts\/dev.mjs --live"/);
+    const script = read("scripts/dev.mjs");
+    expect(script).toMatch(/LIVE_TRADING_ENABLED: live \? "true" : "false"/);
+    expect(script).toMatch(/TRADING_MODE: live \? "LIVE" : "PAPER"/);
   });
 
   it.each([

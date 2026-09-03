@@ -25,7 +25,7 @@ function printUsage(): void {
   console.log("  risk                    Risk gates / kill switch status");
   console.log("  paper | execution       Paper trader (Phase 7; never placeOrder)");
   console.log("  record                  Start/stop data recorder (no trading)");
-  console.log("  live                    Live trader (Phase 11; placeOrder only if both flags on)");
+  console.log("  live                    Same Start/Stop loop as the dashboard (placeOrder only after Start)");
   console.log("  observe                 Health / metrics dump (Phase 9)");
 }
 

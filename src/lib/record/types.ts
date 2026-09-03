@@ -69,6 +69,7 @@ export interface RecordAccountView {
   walletPreview: string | null;
   hasWallet: boolean;
   hasPaperKeys: boolean;
+  hasLiveKeys: boolean;
   bankrollUsdt: number;
   accountType: string;
 }
@@ -85,6 +86,8 @@ export interface RecordPayload {
   collecting: boolean;
   lastSampleAt: string | null;
   lastError: string | null;
+  tradingMode: "PAPER" | "LIVE";
+  liveTradingEnabled: boolean;
   paper: RecordPaperCycle | null;
   account: RecordAccountView;
   session: RecordSessionView | null;

@@ -97,9 +97,40 @@ function paperHint(data: DashboardPayload): { text: string; tone: "ok" | "warn" 
   const enabled = data.strategies.filter((row) => row.enabled).length;
   const open = data.ledger.openPositions;
   const closed = data.ledger.closedPositions;
+  const live = data.liveTradingEnabled;
+  if (live) {
+    if (data.risk.killSwitch) {
+      return {
+        text: `Kill switch ON (${data.risk.killSwitchReason ?? "ручний"}) — LIVE не відкриває нові позиції. EXIT дозволений. Зніми kill на сторінці Ризик, щоб знову входити.`,
+        tone: "warn",
+      };
+    }
+    if (!data.record.running) {
+      return {
+        text: "LIVE. Натисніть Старт — реальні placeOrder. Стоп зупиняє нові ордери. Стратегії вмикаються як у paper. Kill за замовчуванням вимкнений.",
+        tone: "warn",
+      };
+    }
+    if (paper && paper.filled > 0) {
+      return {
+        text: `LIVE: ${paper.filled} ордерів на ${paper.considered} ринках. Дивіться Ордери (SUBMITTED → FILLED) і баланс на Binance.`,
+        tone: "ok",
+      };
+    }
+    if (paper) {
+      return {
+        text: `LIVE цикл: ${paper.filled} ордерів / ${paper.considered} ринків · ${paper.enabled} стратегій. ${paperSkipLabel(paper.skip) ?? ""}`.trim(),
+        tone: paper.considered === 0 ? "warn" : "muted",
+      };
+    }
+    return {
+      text: "LIVE після Старт. Увімкніть стратегії, якщо ще ні — інакше цикл idle.",
+      tone: enabled === 0 ? "warn" : "muted",
+    };
+  }
   if (data.risk.killSwitch) {
     return {
-      text: `Kill switch увімкнений (${data.risk.killSwitchReason ?? "ризик"}), але paper його ігнорує — нові входи йдуть. У книзі ${open} відкритих / ${closed} закритих. LIVE цей kill різав би ENTER.`,
+      text: `Kill switch увімкнений (${data.risk.killSwitchReason ?? "ризик"}), але paper його ігнорує — нові входи йдуть. У книзі ${open} відкритих / ${closed} закритих.`,
       tone: "muted",
     };
   }
@@ -199,16 +230,18 @@ export function OverviewPanel() {
           tone={data.record.running ? "ok" : "muted"}
         />
         <Stat
-          label="Paper цикл"
+          label={data.liveTradingEnabled ? "Live цикл" : "Paper цикл"}
           value={
             data.record.paper
-              ? `${data.record.paper.filled} філів / ${data.record.paper.considered} ринків`
+              ? `${data.record.paper.filled} ${data.liveTradingEnabled ? "ордерів" : "філів"} / ${data.record.paper.considered} ринків`
               : "ще не було"
           }
           hint={
             data.record.paper
               ? `${data.record.paper.enabled} стратегій · ${paperSkipLabel(data.record.paper.skip) ?? "ok"} · ${fmtAge(data.record.paper.at)}`
-              : "після Старт або worker:paper"
+              : data.liveTradingEnabled
+                ? "після Старт LIVE"
+                : "після Старт або worker:paper"
           }
           tone={
             data.record.paper && data.record.paper.filled > 0
@@ -227,13 +260,13 @@ export function OverviewPanel() {
         <Stat
           label="Фаза"
           value={String(data.phase)}
-          hint="AWS IaC, live вимкнений"
+          hint="AWS IaC, Docker live off; локально npm run dev:live"
           tone="ok"
         />
         <Stat
           label="Режим"
           value={data.tradingMode}
-          hint={data.liveTradingEnabled ? "LIVE flags on" : "live вимкнений"}
+          hint={data.liveTradingEnabled ? "npm run dev:live" : "live вимкнений"}
           tone={data.liveTradingEnabled ? "bad" : "ok"}
         />
         <Stat
@@ -241,8 +274,8 @@ export function OverviewPanel() {
           value={risk.killSwitch ? "ON" : "off"}
           hint={
             risk.killSwitch
-              ? `${risk.killSwitchReason ?? "armed"} · paper ігнорує, LIVE ріже ENTER`
-              : "paper ігнорує kill / cooldown / slippage"
+              ? `${risk.killSwitchReason ?? "armed"} · paper ігнорує; LIVE ріже ENTER лише якщо ON`
+              : "вимкнений · LIVE ENTER не блокує"
           }
           tone={risk.killSwitch ? "warn" : "ok"}
         />
@@ -281,7 +314,7 @@ export function OverviewPanel() {
           tone={data.hasWallet && data.hasPaperKeys ? "ok" : "warn"}
         />
         <Stat label="Ринки" value={`${data.markets.length}`} hint={`закриття ≤ ${Math.round(limits.maxTimeToExpirySec / 3600)} год`} />
-        <Stat label="Стратегії on" value={`${data.strategies.filter((s) => s.enabled).length}`} hint="потрібні для paper-сигналів; live звідси не вмикається" />
+        <Stat label="Стратегії on" value={`${data.strategies.filter((s) => s.enabled).length}`} hint="після Старт на Огляді" />
         <Stat label="Stale / breaker" value={`${risk.staleData ? "stale" : "fresh"} / ${risk.apiErrorBreaker ? "open" : "closed"}`} />
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
@@ -708,12 +741,12 @@ export function StrategiesPanel() {
 
   const mode = data.paperEntryMode;
   return (
-    <Card title="Дослідницькі стратегії (увімкнення лише для paper worker)">
+    <Card title="Дослідницькі стратегії">
       <p className="mb-4 text-xs text-zinc-500">
-        Live з цього екрана не вмикається. Увімкнені стратегії торгують лише на віртуальному bankroll
-        після Старт на Огляді. Реальні гроші не списуються. Underlying vs window start: свічка 5m/15m
-        відносно свого open (startPrice). Нижче старту → Down, вище → Up. Якщо 1м уже розвернулась —
-        йдемо за 1м, а не за старим 15м lookback.
+        Увімкнені стратегії торгують після Старт на Огляді: у paper — віртуальний bankroll, у LIVE —
+        реальний placeOrder. Режим задає команда запуску (`npm run dev` або `npm run dev:live`), не
+        цей екран. Underlying vs window start: свічка 5m/15m відносно свого open (startPrice). Нижче
+        старту → Down, вище → Up. Якщо 1м уже розвернулась — йдемо за 1м, а не за старим 15м lookback.
       </p>
       <div className="mb-5 rounded-xl border border-zinc-800 px-3 py-3">
         <p className="mb-2 text-sm text-zinc-200">Вхід на одному контракті</p>
@@ -795,8 +828,9 @@ export function RiskPanel() {
     <div className="space-y-6">
       <Card title="Risk state">
         <p className="mb-4 max-w-3xl text-xs leading-5 text-zinc-500">
-          Arm kill switch зараз лише для LIVE. У PAPER записи kill / cooldown лишаються на екрані,
-          але цикл paper все одно входить.
+          Kill за замовчуванням вимкнений і не ріже позиції. Увімкни його тут, лише коли треба
+          зупинити нові LIVE-входи (EXIT лишається). Paper kill ігнорує завжди. Старт LIVE скидає
+          kill у off.
         </p>
         <div className="mb-4 flex flex-wrap gap-2">
           <button
@@ -820,7 +854,7 @@ export function RiskPanel() {
           <Stat label="Consecutive losses" value={`${data.risk.consecutiveLosses}`} />
           <Stat label="Stale" value={data.risk.staleData ? "yes" : "no"} />
           <Stat label="API breaker" value={data.risk.apiErrorBreaker ? "open" : "closed"} />
-          <Stat label="Live flags" value={data.liveTradingEnabled ? "ON" : "off"} hint="тільки env, не з UI" />
+          <Stat label="Live flags" value={data.liveTradingEnabled ? "ON" : "off"} hint="npm run dev:live, не з UI" />
         </div>
       </Card>
       <Card title="Risk events">

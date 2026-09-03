@@ -1,4 +1,4 @@
-import { RiskEventType, TradingMode } from "@prisma/client";
+import { RiskEventType } from "@prisma/client";
 import type { RiskLimits, RiskSnapshot } from "@/lib/risk/types";
 
 export function utcDay(at: Date): string {
@@ -26,6 +26,15 @@ export function armKillSwitch(state: RiskSnapshot, reason: string, now: Date, co
     killSwitch: true,
     killSwitchReason: reason,
     cooldownUntil: new Date(now.getTime() + cooldownMs),
+  };
+}
+
+export function disarmKillSwitch(state: RiskSnapshot): RiskSnapshot {
+  return {
+    ...state,
+    killSwitch: false,
+    killSwitchReason: null,
+    cooldownUntil: null,
   };
 }
 
@@ -60,26 +69,5 @@ export function recordClosedTrade(
   };
 
   const tripped: RiskEventType[] = [];
-  const liveHalt = next.mode === TradingMode.LIVE;
-  const dailyLossLimit = -limits.bankrollUsdt * (limits.maxDailyLossPct / 100);
-  if (liveHalt && dailyPnl <= dailyLossLimit) {
-    next = armKillSwitch(next, "max_daily_loss", now, limits.cooldownMs);
-    tripped.push(RiskEventType.MAX_DAILY_LOSS, RiskEventType.KILL_SWITCH);
-  }
-  if (liveHalt && currentDrawdown >= limits.maxDrawdownPct / 100) {
-    next = armKillSwitch(next, "max_drawdown", now, limits.cooldownMs);
-    tripped.push(RiskEventType.MAX_DRAWDOWN, RiskEventType.KILL_SWITCH);
-  }
-  if (
-    liveHalt &&
-    consecutiveLosses >= limits.consecutiveLossesForCooldown &&
-    !next.killSwitch
-  ) {
-    next = {
-      ...next,
-      cooldownUntil: new Date(now.getTime() + limits.cooldownMs),
-    };
-    tripped.push(RiskEventType.COOLDOWN);
-  }
   return { state: next, tripped };
 }

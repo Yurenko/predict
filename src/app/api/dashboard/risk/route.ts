@@ -30,6 +30,7 @@ export async function PATCH(request: NextRequest) {
       ...state,
       killSwitch,
       killSwitchReason: killSwitch ? "manual_dashboard" : null,
+      cooldownUntil: killSwitch ? state.cooldownUntil : null,
     };
     await persistRiskSnapshot(next);
     await prisma.riskEvent.create({

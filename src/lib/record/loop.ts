@@ -1,17 +1,21 @@
-import { env } from "@/lib/config/env";
+import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { childLogger } from "@/lib/logger";
 import { runRestSyncOnce } from "../../../workers/src/collectors/rest-sync";
 import { startPredictionWsCollector } from "../../../workers/src/collectors/prediction-ws";
 import { startUnderlyingWsCollector } from "../../../workers/src/collectors/underlying-ws";
 import { runPaperOnce } from "../../../workers/src/execution/service";
+import { runLiveOnce } from "../../../workers/src/execution/live";
 import {
   closeRunningSessions,
   readRecordControl,
   writeRecordControl,
 } from "@/lib/record/control";
+import { cycleFromLiveResult } from "@/lib/record/execution-mode";
+import { ensureLiveRuntime } from "@/lib/record/live-runtime";
 import { sampleRecordOnce } from "@/lib/record/sample";
+import { writePaperCycle } from "@/lib/paper/cycle";
+import { isPidAlive } from "@/lib/record/types";
 import { sleep } from "@/lib/binance/rate-limit";
-import { assertPaperWorkerNotLive } from "@/lib/live/gate";
 
 const log = childLogger({ component: "record-loop" });
 
@@ -62,23 +66,64 @@ async function startCollectorsIfNeeded(exitOnSignal: boolean): Promise<void> {
   }
 }
 
+async function runSessionCycle(): Promise<void> {
+  if (!isLiveTradingEnabled()) {
+    const paper = await runPaperOnce();
+    await writeRecordControl({
+      paper: {
+        at: paper.at,
+        enabled: paper.enabled,
+        considered: paper.considered,
+        filled: paper.filled,
+        skip: paper.skip,
+      },
+    });
+    return;
+  }
+
+  const runtime = await ensureLiveRuntime();
+  if (!runtime.ok) {
+    const cycle = cycleFromLiveResult({
+      enabled: 0,
+      considered: 0,
+      submitted: 0,
+      skip: runtime.skip,
+    });
+    await writePaperCycle(cycle);
+    await writeRecordControl({ paper: cycle });
+    return;
+  }
+
+  const result = await runLiveOnce(runtime.ctx, runtime.venue);
+  const cycle = cycleFromLiveResult(result);
+  await writePaperCycle(cycle);
+  await writeRecordControl({ paper: cycle });
+}
+
 /**
- * Collect + paper cycle. Never opens a second Node window.
- * CLI worker may install process signals; the dashboard must not.
+ * Collect + paper or live cycle, gated by dashboard Start/Stop.
+ * Live placeOrder runs only while the session is running and both live flags are on.
+ * Never opens a second Node window. CLI may install process signals; the dashboard must not.
  */
 export async function runRecordLoop(options: { exitOnSignal?: boolean } = {}): Promise<void> {
   const exitOnSignal = options.exitOnSignal !== false;
+  const live = isLiveTradingEnabled();
   log.info(
-    { pid: process.pid, liveTradingEnabled: env.LIVE_TRADING_ENABLED, exitOnSignal },
-    "starting record loop (spot+prediction collect, paper fills, never placeOrder)",
+    { pid: process.pid, liveTradingEnabled: live, exitOnSignal },
+    live
+      ? "starting record loop (collect + live placeOrder only after Start)"
+      : "starting record loop (spot+prediction collect, paper fills, never placeOrder)",
   );
 
-  await writeRecordControl({ pid: process.pid, lastError: null });
-  try {
-    assertPaperWorkerNotLive();
-  } catch (error) {
-    await rememberError(error, "paper disabled while live flags are on");
+  const existing = await readRecordControl();
+  if (existing.pid && existing.pid !== process.pid && isPidAlive(existing.pid)) {
+    if (exitOnSignal) {
+      log.warn({ existingPid: existing.pid }, "another record loop is already running; exit");
+      return;
+    }
   }
+
+  await writeRecordControl({ pid: process.pid, lastError: null });
   void startCollectorsIfNeeded(exitOnSignal).catch((error: unknown) => {
     void rememberError(error, "collectors failed to start");
   });
@@ -103,18 +148,9 @@ export async function runRecordLoop(options: { exitOnSignal?: boolean } = {}): P
         await rememberError(error, "record sample failed");
       }
       try {
-        const paper = await runPaperOnce();
-        await writeRecordControl({
-          paper: {
-            at: new Date().toISOString(),
-            enabled: paper.enabled,
-            considered: paper.considered,
-            filled: paper.filled,
-            skip: paper.skip,
-          },
-        });
+        await runSessionCycle();
       } catch (error) {
-        await rememberError(error, "paper cycle failed");
+        await rememberError(error, live ? "live cycle failed" : "paper cycle failed");
       }
     }
     await sleep(env.RECORD_LOOP_INTERVAL_MS);

@@ -40,7 +40,7 @@ export function deriveAlerts(input: AlertInput): ObservabilityAlert[] {
     alerts.push({
       severity: "error",
       code: "kill_switch",
-      message: input.killSwitchReason ?? "kill switch is armed; ENTER is blocked",
+      message: input.killSwitchReason ?? "kill switch is armed; LIVE ENTER is blocked",
     });
   }
   if (input.staleData) {

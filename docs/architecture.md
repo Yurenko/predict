@@ -4,8 +4,8 @@ Research-first платформа для Binance Wallet Prediction Markets.
 
 ## Принципи
 
-- Дані і виконання живуть у worker-процесах, не в Next.js UI.
-- Live trading вимкнений, поки `LIVE_TRADING_ENABLED=true` і `TRADING_MODE=LIVE` одночасно.
+- Дані і виконання живуть у worker-процесах; локальний дашборд Start крутить той самий цикл in-process (paper або live).
+- Live trading вимкнений, поки `LIVE_TRADING_ENABLED=true` і `TRADING_MODE=LIVE` одночасно (`npm run dev:live` форсить обидва).
 - Quote з Binance — джерело executable price, fees, slippage і price impact. `lastPrice` — історична ціна, не гарантія виконання.
 - Стратегії реалізують `evaluate(context) -> Signal | null` і тестуються окремо.
 
@@ -119,9 +119,10 @@ REST для prediction — лише рідке discovery (`market/list` + `detai
 
 `evaluateRisk(intent, state, limits)` — чистий гейт перед входом.
 
-- ENTER блокується: kill switch, cooldown, stale WS, API breaker, max size/count/exposure, min liquidity (unknown ≠ ok), min time-to-expiry, slippage, price impact, відсутній bid/ask, LIVE без двох прапорців.
-- EXIT (flatten) дозволений при kill/stale/api/cooldown, якщо є executable book.
-- Денний лос і просадка армлять kill switch + cooldown.
+- ENTER блокується: kill switch **лише для LIVE і лише якщо вручну ON**, max size/count/exposure, min liquidity (unknown ≠ ok), min time-to-expiry, відсутній bid/ask, LIVE без двох прапорців.
+- Cooldown, stale WS, API breaker, slippage і price impact **не ріжуть ENTER** ні в PAPER, ні в LIVE.
+- EXIT (flatten) дозволений при kill, якщо є executable book.
+- Денний лос і просадка **не** армлять kill. Kill за замовчуванням off; Старт LIVE скидає leftover kill. Увімкнути — кнопка на `/risk`.
 - `lastPrice` як proposed fill → `ABNORMAL_FILL`.
 
 Backtest використовує ті самі size/tte/liquidity гейти; daily-loss kill у replay навмисно не ріже дослідження (ліміт 100% у backtest adapter).
@@ -131,7 +132,7 @@ Backtest використовує ті самі size/tte/liquidity гейти; d
 Окремий Node-процес: `npm run worker:paper` (аліас `execution`).
 
 - Філ лише через `executePaperTrade`: офіційний `getQuote` + книга. `lastPrice` відхиляється, якщо відрізняється від ask/bid.
-- `placeOrder` **не викликається**. Якщо `mode=LIVE` або live-прапорці увімкнені — paper worker відмовляє (`npm run worker:live-exec`).
+- `placeOrder` **не викликається**. Якщо `mode=LIVE` або live-прапорці увімкнені — paper worker відмовляє (`npm run dev:live` + Старт).
 - Немає quote / expireAt у минулому / немає feeAmount і feeRateBps → немає філу. `feeRateBps` у запит getQuote не передаємо.
 - Idempotency: SHA-256 ключ на mode/strategy/market/token/side/action/time bucket; повтор у тому ж вікні не створює другий Execution.
 - Order state machine: `PENDING → SUBMITTED → FILLED|PARTIALLY_FILLED|FAILED|EXPIRED|CANCELLED`.
@@ -176,13 +177,13 @@ IaC у `infra/aws`. **Apply не є частиною цього етапу.**
 
 ## Live execution (Phase 11)
 
-Окремий процес: `npm run worker:live-exec`. **Не** частина Next.js і **не** додається в ECS з `LIVE_TRADING_ENABLED=true`.
+Локальний UX як у paper: `npm run dev` або `npm run dev:live`, далі стратегії і **Старт/Стоп** на Огляді. Цикл крутиться в процесі дашборда (як record/paper). `placeOrder` лише поки сесія running і обидва live-прапорці on (`dev:live` їх форсить, dotenv їх не перебиває). **Не** додається в ECS з `LIVE_TRADING_ENABLED=true`.
 
-- Увімкнення лише env: `LIVE_TRADING_ENABLED=true` **і** `TRADING_MODE=LIVE`. Інакше воркер idle, `placeOrder` не викликається.
+- Увімкнення режиму — команда запуску, не кнопка на `/risk`. `PATCH /api/dashboard/risk` як і раніше відхиляє live flags.
 - Credentials: `BINANCE_LIVE_API_KEY` / `SECRET` (окремо від paper). `placeOrder` у адаптері теж відмовляє без двох прапорців.
 - Порядок: той самий risk gate → офіційний `getQuote` (без `feeRateBps`) → `POST .../trade/place-order-bundle` з `orderType=MARKET`, `timeInForce=FOK`, `quoteId`.
 - `PlaceOrderResponse` має лише `orderId`. Філ не симулюється і не береться з `lastPrice`. Кількість/ціна — з `queryOrderHistory` / `queryActiveOrders` (`filledUsdtAmount`, `filledShareQty`, `price`, `marketProviderFee`, `networkFee`).
 - `walletId`: `BINANCE_PREDICTION_WALLET_ID` або збіг адреси в `listPredictionWallets`. Немає id — немає ордера.
 - Paper worker (`npm run worker:paper`) падає на старті, якщо live-прапорці увімкнені.
-- Dashboard **не може** змінити live flags (`PATCH /api/dashboard/risk` відхиляє ці поля).
+- `npm run worker:live-exec` — той самий record loop (чекає Старт); не запускати паралельно з `dev:live`.
 

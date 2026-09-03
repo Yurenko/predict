@@ -13,7 +13,7 @@ export function assertLiveExecution(mode: TradingMode): void {
 export function assertPaperWorkerNotLive(): void {
   if (isLiveTradingEnabled()) {
     throw new Error(
-      "paper worker refuses to run while live flags are on; use npm run worker:live-exec",
+      "paper worker refuses to run while live flags are on; use npm run dev:live and press Start",
     );
   }
 }

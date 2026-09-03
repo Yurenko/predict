@@ -1,4 +1,4 @@
-import { env } from "@/lib/config/env";
+import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { prisma } from "@/lib/db/prisma";
 import { asNumber } from "@/lib/normalize/numbers";
 import { collectorsAreFresh, loadCollectorHeartbeats } from "@/lib/observability/health";
@@ -34,6 +34,8 @@ export function emptyRecordPayload(): RecordPayload {
     collecting: false,
     lastSampleAt: null,
     lastError: null,
+    tradingMode: isLiveTradingEnabled() ? "LIVE" : "PAPER",
+    liveTradingEnabled: isLiveTradingEnabled(),
     paper: null,
     account: recordAccount(),
     session: null,
