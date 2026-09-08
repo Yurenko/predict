@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
-import { ManagedWebSocket, reconnectDelayAfterClose } from "./ws-connection";
+import { ManagedWebSocket, effectivePingIntervalMs, reconnectDelayAfterClose } from "./ws-connection";
 
 describe("ManagedWebSocket", () => {
   let server: WebSocketServer | undefined;
@@ -74,6 +74,13 @@ describe("ManagedWebSocket", () => {
 
     await viWaitUntil(() => received.length >= 1, 4_000);
     expect(received[0]).toEqual({ command: "SUBSCRIBE", value: ["topic"] });
+  });
+});
+
+describe("effectivePingIntervalMs", () => {
+  it("pings before the stale watchdog on a quiet prediction book", () => {
+    expect(effectivePingIntervalMs(15_000, 30_000)).toBe(7_500);
+    expect(effectivePingIntervalMs(15_000, 8_000)).toBe(7_500);
   });
 });
 

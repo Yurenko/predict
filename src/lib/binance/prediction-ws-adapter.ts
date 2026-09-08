@@ -55,7 +55,7 @@ export class OfficialPredictionOrderbookWsAdapter implements PredictionRealtimeA
     const connection = new ManagedWebSocket({
       name: "prediction-orderbook",
       headers: { "X-MBX-APIKEY": this.apiKey },
-      pingIntervalMs: 30_000,
+      pingIntervalMs: 8_000,
       applicationPing: sapiPingMessage,
       staleMs: env.WS_STALE_MS,
       maxConnectionMs: env.WS_MAX_CONNECTION_MS,

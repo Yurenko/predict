@@ -5,8 +5,8 @@ import type { UnderlyingTick } from "@/lib/backtest/types";
 import { readLiveOrderbook } from "@/lib/ingest/raw-store";
 import { returnOver } from "@/lib/backtest/features";
 import { asNumber } from "@/lib/normalize/numbers";
-import { tickFromSnapshot } from "@/lib/normalize/tick";
-import { tradableMarketQuery, marketHeadline } from "@/lib/markets/horizon";
+import { tradableMarketQuery, marketHeadline, isShortCryptoUpDownRow } from "@/lib/markets/horizon";
+import { selectPrimarySnapshot, tickFromSnapshot } from "@/lib/normalize/tick";
 import { createStrategy, loadResearchStrategies } from "@/lib/strategy";
 import type { Strategy, StrategyContext, StrategySignal } from "@/lib/types/domain";
 import { childLogger } from "@/lib/logger";
@@ -111,12 +111,10 @@ export async function sampleRecordOnce(sessionId: string): Promise<{
   let signalCount = 0;
 
   for (const market of markets) {
-    const latest = market.snapshots[0];
-    if (!latest) continue;
-    const outcome =
-      market.outcomes.find((item) => item.id === latest.outcomeId) ??
-      market.outcomes[0] ??
-      null;
+    if (!isShortCryptoUpDownRow(market)) continue;
+    const picked = selectPrimarySnapshot(market.snapshots, market.outcomes);
+    if (!picked) continue;
+    const { snapshot: latest, outcome } = picked;
     let tick = tickFromSnapshot({ ...latest, market, outcome });
     const live = await readLiveOrderbook(market.venueMarketId);
     if (live) {

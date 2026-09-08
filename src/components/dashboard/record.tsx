@@ -5,7 +5,7 @@ import type { RecordPayload, RecordTickView } from "@/lib/record/types";
 import { paperSkipLabel } from "@/lib/paper/skip";
 import { fmtAge, fmtDuration, fmtNum, fmtPct, fmtRemaining, fmtTime, fmtUsd, pnlClass } from "@/components/dashboard/format";
 import { Card, Empty, Pill, Stat, Table } from "@/components/dashboard/ui";
-import { ClearDataButtons } from "@/components/dashboard/clear";
+import { ClearDataButtons, DASHBOARD_RESET_EVENT } from "@/components/dashboard/clear";
 import { Pager } from "@/components/dashboard/pager";
 import { LEDGER_PAGE_SIZE, ledgerPageCount, slicePage } from "@/lib/dashboard/pages";
 
@@ -59,7 +59,12 @@ export function useRecordFeed() {
   useEffect(() => {
     void refresh();
     const id = window.setInterval(() => void refresh(), 2_000);
-    return () => window.clearInterval(id);
+    const onReset = () => void refresh();
+    window.addEventListener(DASHBOARD_RESET_EVENT, onReset);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener(DASHBOARD_RESET_EVENT, onReset);
+    };
   }, [refresh]);
 
   const control = useCallback(async (action: "start" | "stop") => {
@@ -103,7 +108,7 @@ export function RecordControls() {
             Той самий Старт/Стоп, що в paper. Після Старт цикл: стратегія → сигнал → офіційний
             placeOrder на bankroll {fmtUsd(data.account.bankrollUsdt)}.{" "}
             <span className="text-rose-300">Реальні гроші списуються з гаманця Binance.</span> Стоп
-            зупиняє нові ордери.
+            зупиняє нові входи стратегій; кнопка Закрити на Позиціях працює далі.
           </p>
         ) : (
           <p>
@@ -366,7 +371,7 @@ export function RecordTapePanel() {
       <Card title="Гіпотетичні сигнали (не ордери)">
         <Table
           columns={["Час", "Стратегія", "Ринок", "Dir", "Fair", "Net edge", "Причина"]}
-          empty="Сигналу немає, бо немає prediction книги (bid/ask/chance). Зараз пишеться лише spot BTC/ETH/SOL. Колонка Сигнал у стрічці лишається «—» — це не збій."
+          empty="Сигналу немає, бо немає prediction книги (bid/ask/chance). Зараз пишеться лише spot BTC/ETH/BNB. Колонка Сигнал у стрічці лишається «—» — це не збій."
           rows={slicePage(hypothetical, signalPage, LEDGER_PAGE_SIZE).map((row, index) => [
             fmtTime(row.at),
             row.strategySlug,

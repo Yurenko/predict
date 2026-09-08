@@ -42,6 +42,7 @@ export interface DashboardPosition {
   mode: "PAPER" | "LIVE";
   status: string;
   side: "BUY" | "SELL";
+  outcomeName: string | null;
   tokenId: string;
   marketId: string;
   marketTitle: string;
@@ -61,6 +62,7 @@ export interface DashboardPosition {
   openedAt: string;
   closedAt: string | null;
   endDate: string | null;
+  claimStatus: string | null;
 }
 
 export interface DashboardOrder {
@@ -68,6 +70,7 @@ export interface DashboardOrder {
   clientOrderId: string;
   status: string;
   side: string;
+  outcomeName: string | null;
   tokenId: string;
   marketTitle: string;
   marketQuestion: string | null;
@@ -75,6 +78,8 @@ export interface DashboardOrder {
   averagePrice: number | null;
   filledUsdtAmount: number | null;
   reason: string | null;
+  intent: string | null;
+  action: string | null;
   submittedAt: string | null;
 }
 
@@ -84,6 +89,7 @@ export interface DashboardSignal {
   marketTitle: string;
   marketQuestion: string | null;
   direction: string;
+  outcomeName: string | null;
   netEdge: number;
   accepted: boolean;
   reason: string;
@@ -176,6 +182,11 @@ export interface DashboardLedgerPage {
   total: number;
 }
 
+export interface DashboardEquityPoint {
+  t: string;
+  equity: number;
+}
+
 export interface DashboardLedger {
   openPositions: number;
   closedPositions: number;
@@ -207,6 +218,7 @@ export interface DashboardPayload {
   hasLiveKeys: boolean;
   health: DashboardHealth;
   risk: DashboardRisk;
+  equityCurve: DashboardEquityPoint[];
   limits: DashboardLimits;
   account: DashboardAccount;
   ledger: DashboardLedger;
@@ -219,6 +231,7 @@ export interface DashboardPayload {
   markets: DashboardMarket[];
   strategies: DashboardStrategy[];
   paperEntryMode: "all" | "single";
+  liveBinaryMode: "independent" | "flip";
   backtests: DashboardBacktest[];
   riskEvents: DashboardRiskEvent[];
 }

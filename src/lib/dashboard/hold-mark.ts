@@ -1,6 +1,13 @@
 import { mtmEquity, sumOpenUnrealized } from "@/lib/dashboard/equity";
 import { unrealizedPnl } from "@/lib/dashboard/mark";
-import type { DashboardPayload, DashboardPosition } from "@/lib/dashboard/types";
+import type { DashboardEquityPoint, DashboardPayload, DashboardPosition } from "@/lib/dashboard/types";
+
+function patchEquityCurveNow(curve: DashboardEquityPoint[], equity: number): DashboardEquityPoint[] {
+  if (curve.length === 0) return curve;
+  const last = curve[curve.length - 1];
+  if (!last || Math.abs(last.equity - equity) < 1e-9) return curve;
+  return [...curve.slice(0, -1), { ...last, equity }];
+}
 
 export function stabilizePositionMarks(
   previous: DashboardPosition[] | undefined,
@@ -34,6 +41,7 @@ export function applyHeldMarks(previous: DashboardPayload | null, next: Dashboar
   return {
     ...next,
     positions,
+    equityCurve: patchEquityCurveNow(next.equityCurve, mtmEquity(next.risk.realizedEquity, openMark.pnl)),
     risk: {
       ...next.risk,
       unrealizedPnl: openMark.pnl,

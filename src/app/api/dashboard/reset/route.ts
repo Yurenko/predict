@@ -28,9 +28,18 @@ export async function POST(request: NextRequest) {
   try {
     await resetDashboardData(scope as ResetScope);
   } catch (error) {
+    const code = error instanceof Error ? error.message : "reset failed";
     log.warn({ err: String(error), scope }, "dashboard reset failed");
+    if (code === "stop_first") {
+      return Response.json({ error: "stop_first" }, { status: 409 });
+    }
     return Response.json({ error: "reset failed" }, { status: 503 });
   }
 
-  return Response.json(await loadDashboard());
+  try {
+    return Response.json(await loadDashboard());
+  } catch (error) {
+    log.warn({ err: String(error), scope }, "dashboard reload after reset failed");
+    return Response.json({ ok: true, scope });
+  }
 }

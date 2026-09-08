@@ -5,9 +5,12 @@ export function liveCycleSkip(
   enabled: number,
   considered: number,
   submitted: number,
+  open = 0,
 ): string | null {
   if (enabled === 0) return PAPER_SKIP.noEnabledStrategies;
-  if (considered === 0) return PAPER_SKIP.noNearExpiry;
+  if (considered === 0) {
+    return open > 0 ? PAPER_SKIP.waitingNextHorizon : PAPER_SKIP.noNearExpiry;
+  }
   if (submitted === 0) return PAPER_SKIP.noEntryYet;
   return null;
 }
@@ -16,6 +19,7 @@ export function cycleFromLiveResult(result: {
   enabled: number;
   considered: number;
   submitted: number;
+  open?: number;
   skip?: string | null;
   now?: Date;
 }): PaperCycle {
@@ -24,6 +28,8 @@ export function cycleFromLiveResult(result: {
     enabled: result.enabled,
     considered: result.considered,
     filled: result.submitted,
-    skip: result.skip ?? liveCycleSkip(result.enabled, result.considered, result.submitted),
+    skip:
+      result.skip ??
+      liveCycleSkip(result.enabled, result.considered, result.submitted, result.open ?? 0),
   };
 }

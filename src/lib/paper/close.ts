@@ -38,7 +38,7 @@ export function manualExitPrice(options: {
   return null;
 }
 
-function closeSignal(options: {
+export function manualCloseSignal(options: {
   strategyId: string;
   marketId: string;
   now: Date;
@@ -127,7 +127,7 @@ export async function closePaperPosition(positionId: string): Promise<
   const fill = settlementFill(shares, price);
   const now = new Date();
   const strategyId = row.strategy?.slug ?? "unknown";
-  const signal = closeSignal({ strategyId, marketId: row.marketId, now, chance });
+  const signal = manualCloseSignal({ strategyId, marketId: row.marketId, now, chance });
   const book: PaperBook = {
     bestBid: bestBid ?? price,
     bestAsk: bestAsk ?? price,

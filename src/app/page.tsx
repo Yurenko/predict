@@ -10,7 +10,7 @@ export default function Home() {
         <h1 className="text-3xl font-semibold tracking-tight">Огляд</h1>
         <p className="max-w-2xl text-sm leading-6 text-zinc-400">
           {live
-            ? "LIVE: ті самі Старт/Стоп і стратегії, що в paper. Після Старт ордери йдуть на біржу (placeOrder). Стоп зупиняє нові угоди. Equity = закритий PnL + uPnL відкритих."
+            ? "LIVE: ті самі Старт/Стоп і стратегії, що в paper. Після Старт ордери йдуть на біржу (placeOrder). Стоп зупиняє нові входи стратегій, не кнопку Закрити. Equity = закритий PnL + uPnL відкритих."
             : "Запис на віртуальному bankroll: сигнали й paper-ордери без списання реальних грошей. Binance placeOrder не викликається. Equity = закритий PnL + uPnL відкритих (якщо є книга)."}{" "}
           Очищення — кнопки біля Старт/Стоп.
         </p>

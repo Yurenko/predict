@@ -4,8 +4,13 @@ import { prisma } from "@/lib/db/prisma";
 import { asNumber } from "@/lib/normalize/numbers";
 import { childLogger } from "@/lib/logger";
 import { feeAmountToUsdt } from "@/lib/paper/quote-validate";
-import { paperExitPnl } from "@/lib/paper/action";
 import { mapOfficialOrderStatus } from "@/lib/live/status";
+import {
+  applyLiveFillToPosition,
+  completeOfficialFill,
+  type LivePositionSnapshot,
+} from "@/lib/live/position-fill";
+import { clearLiveFlatten } from "@/lib/live/flatten";
 import { inc } from "@/lib/observability/metrics";
 
 const log = childLogger({ component: "live-reconcile" });
@@ -20,15 +25,7 @@ function numericAmount(value: string | undefined): number | null {
   return asNumber(value);
 }
 
-function fillFromOfficial(row: OfficialOrder): {
-  status: OrderStatus | null;
-  notional: number | null;
-  shares: number | null;
-  price: number | null;
-  fee: number;
-  network: number;
-  fillPct: number | null;
-} {
+function fillFromOfficial(row: OfficialOrder) {
   const notional = numericAmount(row.filledUsdtAmount);
   const shares = numericAmount(row.filledShareQty);
   const price = asNumber(row.price);
@@ -50,111 +47,145 @@ function fillFromOfficial(row: OfficialOrder): {
   };
 }
 
+function snapshotFromRow(row: {
+  id: string;
+  side: LivePositionSnapshot["side"];
+  shares: Prisma.Decimal | number | string;
+  avgPrice: Prisma.Decimal | number | string;
+  totalCost: Prisma.Decimal | number | string;
+  feesPaid: Prisma.Decimal | number | string;
+  networkCostPaid: Prisma.Decimal | number | string;
+  realizedPnl: Prisma.Decimal | number | string;
+}): LivePositionSnapshot {
+  return {
+    id: row.id,
+    side: row.side,
+    shares: Number(row.shares),
+    avgPrice: Number(row.avgPrice),
+    totalCost: Number(row.totalCost),
+    feesPaid: Number(row.feesPaid),
+    networkCostPaid: Number(row.networkCostPaid),
+    realizedPnl: Number(row.realizedPnl),
+  };
+}
+
+function jsonPayload(
+  existing: Prisma.JsonValue | null | undefined,
+  extra: Record<string, unknown>,
+): Prisma.InputJsonValue {
+  const base =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  return { ...base, ...extra } as Prisma.InputJsonValue;
+}
+
 export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolean> {
   if (!row.orderId) return false;
   const order = await prisma.order.findFirst({
     where: { mode: TradingMode.LIVE, venueOrderId: row.orderId },
-    include: { executions: true, position: true },
+    include: {
+      executions: true,
+      position: true,
+      signal: { select: { strategyId: true } },
+    },
   });
   if (!order) return false;
 
   const parsed = fillFromOfficial(row);
   const nextStatus = parsed.status ?? order.status;
-  const hasFill =
-    parsed.notional !== null &&
-    parsed.shares !== null &&
-    parsed.price !== null &&
-    parsed.shares > 0 &&
-    parsed.notional > 0 &&
-    parsed.price > 0;
+  const fill = completeOfficialFill(parsed);
 
   await prisma.order.update({
     where: { id: order.id },
     data: {
       status: nextStatus,
       vendorOrderId: row.vendorOrderId ?? order.vendorOrderId,
-      filledUsdtAmount: parsed.notional ?? order.filledUsdtAmount,
-      filledShareQty: parsed.shares ?? order.filledShareQty,
+      filledUsdtAmount: fill?.notional ?? parsed.notional ?? order.filledUsdtAmount,
+      filledShareQty: fill?.shares ?? parsed.shares ?? order.filledShareQty,
       fillPercentage: parsed.fillPct ?? order.fillPercentage,
-      averagePrice: parsed.price ?? order.averagePrice,
+      averagePrice: fill?.price ?? parsed.price ?? order.averagePrice,
       marketProviderFee: parsed.fee || order.marketProviderFee,
       networkFee: parsed.network || order.networkFee,
       terminalAt:
         nextStatus === OrderStatus.SUBMITTED || nextStatus === OrderStatus.PENDING
           ? order.terminalAt
           : new Date(),
-      rawPayload: { officialStatus: row.status ?? null, orderId: row.orderId },
+      rawPayload: jsonPayload(order.rawPayload, {
+        officialStatus: row.status ?? null,
+        orderId: row.orderId,
+      }),
     },
   });
 
-  if (!hasFill || order.executions.length > 0) {
+  if (!fill || order.executions.length > 0) {
     return true;
   }
 
-  const fill = {
-    ok: true as const,
-    price: parsed.price as number,
-    shares: parsed.shares as number,
-    notional: parsed.notional as number,
-    fee: parsed.fee,
-    slippage: 0,
-    priceImpact: 0,
-    networkCost: parsed.network,
-    partial: nextStatus === OrderStatus.PARTIALLY_FILLED,
-  };
-
-  let positionId = order.positionId;
-  if (!positionId) {
-    const open = await prisma.position.findFirst({
+  const linkedOpen =
+    order.position && order.position.status === PositionStatus.OPEN ? order.position : null;
+  const open =
+    linkedOpen ??
+    (await prisma.position.findFirst({
       where: {
         mode: TradingMode.LIVE,
         status: PositionStatus.OPEN,
         marketId: order.marketId,
         tokenId: order.tokenId,
       },
+    }));
+
+  const applied = applyLiveFillToPosition(open ? snapshotFromRow(open) : null, fill, order.side);
+  const strategyId = open?.strategyId ?? order.signal?.strategyId ?? undefined;
+  const now = new Date();
+
+  let positionId = open?.id ?? applied.position.id;
+  if (!open) {
+    const created = await prisma.position.create({
+      data: {
+        mode: TradingMode.LIVE,
+        strategyId,
+        marketId: order.marketId,
+        outcomeId: order.outcomeId,
+        tokenId: order.tokenId,
+        side: applied.position.side,
+        status: PositionStatus.OPEN,
+        shares: applied.position.shares,
+        avgPrice: applied.position.avgPrice,
+        totalCost: applied.position.totalCost,
+        feesPaid: applied.position.feesPaid,
+        networkCostPaid: applied.position.networkCostPaid,
+      },
     });
-    if (open && open.side !== order.side) {
-      const pnl = paperExitPnl(
-        { side: open.side, avgPrice: Number(open.avgPrice), shares: Number(open.shares) },
-        fill,
-      );
-      await prisma.position.update({
-        where: { id: open.id },
-        data: {
-          status: PositionStatus.CLOSED,
-          closedAt: new Date(),
-          realizedPnl: pnl,
-          feesPaid: { increment: fill.fee },
-          networkCostPaid: { increment: fill.networkCost },
-          rawPayload: {
-            ...(open.rawPayload && typeof open.rawPayload === "object"
-              ? (open.rawPayload as Record<string, unknown>)
-              : {}),
-            closePrice: fill.price,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      positionId = open.id;
-    } else if (!open) {
-      const created = await prisma.position.create({
-        data: {
-          mode: TradingMode.LIVE,
-          marketId: order.marketId,
-          outcomeId: order.outcomeId,
-          tokenId: order.tokenId,
-          side: order.side,
-          status: PositionStatus.OPEN,
-          shares: fill.shares,
-          avgPrice: fill.price,
-          totalCost: fill.notional + fill.fee,
-          feesPaid: fill.fee,
-          networkCostPaid: fill.networkCost,
-        },
-      });
-      positionId = created.id;
-    } else {
-      positionId = open.id;
-    }
+    positionId = created.id;
+  } else {
+    await prisma.position.update({
+      where: { id: open.id },
+      data: {
+        strategyId: open.strategyId ?? strategyId,
+        status: applied.status === "CLOSED" ? PositionStatus.CLOSED : PositionStatus.OPEN,
+        closedAt: applied.status === "CLOSED" ? now : open.closedAt,
+        shares: applied.position.shares,
+        avgPrice: applied.position.avgPrice,
+        totalCost: applied.position.totalCost,
+        realizedPnl: applied.position.realizedPnl,
+        feesPaid: applied.position.feesPaid,
+        networkCostPaid: applied.position.networkCostPaid,
+        rawPayload:
+          applied.closePrice !== null || open.side !== order.side
+            ? jsonPayload(
+                applied.status === "CLOSED" ? clearLiveFlatten(open.rawPayload) : open.rawPayload,
+                {
+                  ...(applied.closePrice !== null ? { closePrice: applied.closePrice } : {}),
+                  ...(open.side !== order.side && applied.status !== "CLOSED"
+                    ? { liveFlatten: true }
+                    : {}),
+                },
+              )
+            : undefined,
+      },
+    });
+    positionId = open.id;
   }
 
   await prisma.execution.create({
@@ -162,11 +193,12 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolea
       mode: TradingMode.LIVE,
       orderId: order.id,
       positionId,
-      executedAt: new Date(),
+      executedAt: now,
       price: fill.price,
       shares: fill.shares,
       usdtAmount: fill.notional,
-      isPartial: fill.partial,
+      isPartial:
+        fill.partial || (applied.status === "OPEN" && open != null && open.side !== order.side),
       rawPayload: { orderId: row.orderId, status: row.status ?? null },
     },
   });
@@ -193,4 +225,22 @@ export async function reconcileLiveOrders(options: {
     }
   }
   return applied;
+}
+
+export async function syncLiveOrdersFromVenue(
+  venue: {
+    queryOrderHistory: (
+      params: W3WPredictionRestAPI.QueryOrderHistoryRequest,
+    ) => Promise<W3WPredictionRestAPI.QueryOrderHistoryResponse>;
+    queryActiveOrders: (
+      params: W3WPredictionRestAPI.QueryActiveOrdersRequest,
+    ) => Promise<W3WPredictionRestAPI.QueryActiveOrdersResponse>;
+  },
+  walletAddress: string,
+): Promise<number> {
+  const [history, active] = await Promise.all([
+    venue.queryOrderHistory({ walletAddress, limit: 50 }),
+    venue.queryActiveOrders({ walletAddress, limit: 50 }),
+  ]);
+  return reconcileLiveOrders({ history, active });
 }

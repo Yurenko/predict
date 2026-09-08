@@ -3,13 +3,22 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DashboardPayload } from "@/lib/dashboard/types";
 import { fmtAge, fmtNum, fmtPct, fmtRemaining, fmtTime, fmtUsd, pnlClass } from "@/components/dashboard/format";
-import { paperSkipLabel } from "@/lib/paper/skip";
+import { PAPER_SKIP, paperSkipLabel } from "@/lib/paper/skip";
 import { sumOpenUnrealized } from "@/lib/dashboard/equity";
 import { applyHeldMarks } from "@/lib/dashboard/hold-mark";
 import { ClearDataButtons } from "@/components/dashboard/clear";
 import { Pager } from "@/components/dashboard/pager";
 import { Card, Empty, Pill, Stat, Table } from "@/components/dashboard/ui";
+import { EquityChart } from "@/components/dashboard/equity-chart";
 import { ledgerPageCount } from "@/lib/dashboard/pages";
+import { signalIntentLabel, orderIntentLabel, orderNotionalUsd } from "@/lib/live/intent-label";
+import { DASHBOARD_RESET_EVENT } from "@/components/dashboard/clear";
+
+function positionSideLabel(row: { side: string; outcomeName?: string | null }): string {
+  const token = row.outcomeName?.trim();
+  if (!token) return row.side;
+  return `${row.side} ${token}`;
+}
 
 function statusTone(status: string): "ok" | "warn" | "bad" | "muted" {
   if (status === "FILLED" || status === "OPEN" || status === "ok") return "ok";
@@ -64,7 +73,12 @@ export function useDashboard(pages?: {
   useEffect(() => {
     void refresh();
     const id = window.setInterval(() => void refresh(), 5_000);
-    return () => window.clearInterval(id);
+    const onReset = () => void refresh();
+    window.addEventListener(DASHBOARD_RESET_EVENT, onReset);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener(DASHBOARD_RESET_EVENT, onReset);
+    };
   }, [refresh]);
 
   return { data, error, loading, refresh, setData };
@@ -107,19 +121,23 @@ function paperHint(data: DashboardPayload): { text: string; tone: "ok" | "warn" 
     }
     if (!data.record.running) {
       return {
-        text: "LIVE. Натисніть Старт — реальні placeOrder. Стоп зупиняє нові ордери. Стратегії вмикаються як у paper. Kill за замовчуванням вимкнений.",
+        text: "LIVE зупинено: стратегії не відкривають нові позиції. Кнопка Закрити все одно шле реальний SELL. Філи з Binance підтягуються в Позиції навіть після Стоп.",
         tone: "warn",
       };
     }
     if (paper && paper.filled > 0) {
       return {
-        text: `LIVE: ${paper.filled} ордерів на ${paper.considered} ринках. Дивіться Ордери (SUBMITTED → FILLED) і баланс на Binance.`,
+        text: `LIVE: ${paper.filled} ордерів на ${paper.considered} ринках. Ордери з’являються одразу (SUBMITTED → FILLED), позиція оновлює shares/avg після філу з Binance.`,
         tone: "ok",
       };
     }
     if (paper) {
+      const skip =
+        paper.considered === 0 && open > 0
+          ? PAPER_SKIP.waitingNextHorizon
+          : paper.skip;
       return {
-        text: `LIVE цикл: ${paper.filled} ордерів / ${paper.considered} ринків · ${paper.enabled} стратегій. ${paperSkipLabel(paper.skip) ?? ""}`.trim(),
+        text: `LIVE цикл: ${paper.filled} ордерів / ${paper.considered} ринків · ${paper.enabled} стратегій. ${paperSkipLabel(skip) ?? ""}`.trim(),
         tone: paper.considered === 0 ? "warn" : "muted",
       };
     }
@@ -160,7 +178,7 @@ function paperHint(data: DashboardPayload): { text: string; tone: "ok" | "warn" 
   }
   if (data.markets.length === 0) {
     return {
-      text: "Paper крутиться на віртуальному bankroll, але немає ринків, що закриваються протягом 24 год. Дивіться Запис (BTC/ETH/SOL) і перезапустіть Старт після зміни категорії.",
+      text: "Paper крутиться на віртуальному bankroll, але зараз немає BTC/ETH/BNB 5m або 15m Up/Down у вікні до експірі.",
       tone: "warn",
     };
   }
@@ -216,6 +234,11 @@ export function OverviewPanel() {
     <div className="space-y-6">
       <Banner error={error} loading={loading} data={data} />
       <PaperBanner data={data} />
+      <EquityChart
+        curve={data.equityCurve}
+        bankroll={data.limits.bankrollUsdt}
+        mode={data.tradingMode}
+      />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
           label="Запис"
@@ -353,33 +376,129 @@ function paperTableEmpty(data: DashboardPayload, kind: "signals" | "orders" | "p
   const skip = data.record.paper?.skip;
   const noBook =
     skip === "no_prediction_book" || skip === "no_near_expiry" || data.markets.length === 0;
+  const live = data.liveTradingEnabled;
   if (kind === "signals") {
     if (noBook) {
       return "Немає сигналів, бо немає prediction книги. Коли з’являться ринки, сюди впадуть BUY/SELL.";
     }
-    return "Немає рядка Signal: стратегії поки не дали BUY/SELL вхід. Гіпотетичні EXIT на вкладці Запис — це не ордер. Accepted = так після віртуального FILLED.";
+    return "Немає рядка Signal: стратегії поки не дали BUY/SELL вхід. Гіпотетичні EXIT на вкладці Запис — це не ордер. Accepted = так після SUBMITTED, позиція — після філу з затримкою.";
   }
   if (kind === "orders") {
+    if (live) {
+      return "Немає LIVE-ордерів. Після Старт сюди падають placeOrder (SUBMITTED), потім FILLED з історії Binance.";
+    }
     if (noBook) {
       return "Немає paper-ордерів. Поки немає prediction книги — таблиця порожня. PlaceOrder на біржу не йде.";
     }
     return "Немає paper-ордерів: входу ще не було, або філ відхилено. PlaceOrder на біржу не йде.";
   }
-  return "Немає paper-позицій. Вони з’являться після віртуального FILLED. Реальні гроші не списуються.";
+  if (live) {
+    return "Немає LIVE-позицій. Вони з’являться після FILLED на біржі (не одразу з SUBMITTED).";
+  }
+  return "Немає paper-позицій. Ордер спочатку SUBMITTED, позиція з’явиться після філу (~5 с). Реальні гроші не списуються.";
+}
+
+function claimStatusLabel(status: string | null): string {
+  if (!status) return "";
+  const upper = status.toUpperCase();
+  if (upper === "CONFIRMED" || upper === "CLAIMED" || upper === "REDEEMED" || upper === "SUCCESS" || upper === "DONE") {
+    return "отримано";
+  }
+  if (upper === "PENDING" || upper === "SUBMITTED") return "claim…";
+  if (upper === "FAILED") return "claim fail";
+  return status;
+}
+
+function closeErrorText(code: string): string {
+  switch (code) {
+    case "no_book":
+      return "Немає bid/ask, щоб закрити";
+    case "not_open":
+      return "Вже закрита";
+    case "not_found":
+      return "Позицію не знайдено";
+    case "not_paper":
+      return "Це LIVE-позиція — закриття йде через біржу. Оновіть сторінку і натисніть Закрити ще раз";
+    case "not_live":
+      return "Це не LIVE-позиція";
+    case "quote_failed":
+      return "getQuote не вдався — спробуйте ще раз";
+    case "inflight":
+      return "Вже є незавершений ордер по цьому ринку — зачекайте філ";
+    case "below_market_min_amount":
+      return "Сума менша за мінімум біржі";
+    case "persist_failed":
+      return "Ордер міг піти на біржу, але не записався локально";
+    case "above_max_position":
+      return "Сума ордера більша за ліміт позиції";
+    case "place_failed":
+      return "Binance не прийняв ордер";
+    case "missing_wallet_id":
+    case "live_adapter_unavailable":
+    case "no_runtime":
+      return "LIVE адаптер або wallet недоступний";
+    default:
+      return code;
+  }
 }
 
 export function PositionsPanel() {
   const [page, setPage] = useState(1);
   const [closingId, setClosingId] = useState<string | null>(null);
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [claiming, setClaiming] = useState(false);
   const { data, error, loading, refresh, setData } = useDashboard({ positionsPage: page });
   if (!data) return <Banner error={error} loading={loading} data={data} />;
-  const realized = data.ledger.closedRealized;
+  const realized =
+    data.ledger.closedRealized +
+    data.positions
+      .filter((row) => row.status === "OPEN")
+      .reduce((sum, row) => sum + row.realizedPnl, 0);
   const openMark = sumOpenUnrealized(data.positions);
   const closedPage = data.ledger.pages.positions;
+  const liveClose = data.liveTradingEnabled;
+
+  async function claimAll() {
+    if (!window.confirm("Надіслати claim (batchRedeem) на Binance для всіх PENDING_CLAIM? Авто-claim чекає 1 хв після експірі.")) {
+      return;
+    }
+    setClaiming(true);
+    setCloseError(null);
+    try {
+      const response = await fetch("/api/dashboard/positions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "claim" }),
+      });
+      const json = (await response.json()) as DashboardPayload & { error?: string; claimed?: number };
+      if (!response.ok) {
+        setCloseError(closeErrorText(json.error ?? `HTTP ${response.status}`));
+        return;
+      }
+      setData(json);
+      setCloseError(
+        json.claimed && json.claimed > 0
+          ? null
+          : "Немає токенів у PENDING_CLAIM, або ще не минула 1 хв після експірі.",
+      );
+    } catch (err) {
+      setCloseError(String(err));
+    } finally {
+      setClaiming(false);
+      void refresh();
+    }
+  }
 
   async function closePosition(id: string) {
-    if (!window.confirm("Закрити цю paper-позицію по поточній книзі (не чекати експірі)?")) return;
+    if (
+      !window.confirm(
+        liveClose
+          ? "Закрити цю LIVE-позицію реальним SELL на Binance? Стоп не блокує закриття."
+          : "Закрити цю paper-позицію по поточній книзі (не чекати експірі)?",
+      )
+    ) {
+      return;
+    }
     setClosingId(id);
     setCloseError(null);
     try {
@@ -390,16 +509,14 @@ export function PositionsPanel() {
       });
       const json = (await response.json()) as DashboardPayload & { error?: string };
       if (!response.ok) {
-        setCloseError(
-          json.error === "no_book"
-            ? "Немає bid/ask, щоб закрити"
-            : json.error === "not_open"
-              ? "Вже закрита"
-              : json.error ?? `HTTP ${response.status}`,
-        );
+        setCloseError(closeErrorText(json.error ?? `HTTP ${response.status}`));
         return;
       }
       setData(json);
+      const stillOpen = json.positions.some((row) => row.id === id && row.status === "OPEN");
+      if (liveClose && stillOpen) {
+        setCloseError("Ордер на закриття відправлено. Позиція зникне з OPEN після філу Binance.");
+      }
     } catch (err) {
       setCloseError(String(err));
     } finally {
@@ -407,11 +524,15 @@ export function PositionsPanel() {
     }
   }
   return (
-    <Card title="Paper позиції (mark = bid/ask)">
+    <Card title={data.liveTradingEnabled ? "LIVE позиції" : "Paper позиції (mark = bid/ask)"}>
       <PaperBanner data={data} />
       <p className="mb-3 max-w-3xl text-xs leading-5 text-zinc-500">
         Статистика угоди: Avg = вхід, Mark = жива книга поки OPEN, Exit = ціна філу закриття
-        (книга, кнопка Закрити, або settlement 0/1). uPnL лише для OPEN. Разом — усі закриті, не лише ця сторінка.
+        (книга, кнопка Закрити, або settlement 0/1). uPnL лише для OPEN. Разом realized — закриті + часткові
+        виходи ще OPEN рядків.
+        {data.liveTradingEnabled
+          ? " У LIVE кнопка Закрити шле реальний SELL і працює після Стоп. Стоп лише зупиняє нові входи стратегій. Після експірі слот вже вільний: claim (batchRedeem, автоматом через 1 хв або «Отримати все») лише забирає виграш в USDT і не блокує ENTER, якщо на гаманці вже є квиток."
+          : " Paper: після експірі позиція спочатку закривається без 0/1 (як Live чекає Binance), settlement з’являється з затримкою. Mark до закриття — остання книга, не миттєвий джекпот."}
       </p>
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <ClearDataButtons
@@ -421,6 +542,16 @@ export function PositionsPanel() {
             void refresh();
           }}
         />
+        {data.liveTradingEnabled ? (
+          <button
+            type="button"
+            disabled={claiming || closingId !== null}
+            onClick={() => void claimAll()}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            {claiming ? "Отримую…" : "Отримати все"}
+          </button>
+        ) : null}
         {closeError ? <span className="text-xs text-rose-400">{closeError}</span> : null}
       </div>
       <Table
@@ -444,8 +575,13 @@ export function PositionsPanel() {
             {fmtTime(row.endDate)}
             <span className="mt-1 block text-xs text-zinc-500">{fmtRemaining(row.endDate)}</span>
           </span>,
-          row.side,
-          <Pill key="s" tone={statusTone(row.status)}>{row.status}</Pill>,
+          positionSideLabel(row),
+          <span key="s">
+            <Pill tone={statusTone(row.status)}>{row.status}</Pill>
+            {row.claimStatus ? (
+              <span className="mt-1 block text-xs text-zinc-500">{claimStatusLabel(row.claimStatus)}</span>
+            ) : null}
+          </span>,
           fmtNum(row.shares, 4),
           fmtNum(row.avgPrice, 4),
           markCell(row),
@@ -503,6 +639,11 @@ export function OrdersPanel() {
   return (
     <Card title="Ордери">
       <PaperBanner data={data} />
+      <p className="mb-3 max-w-3xl text-xs leading-5 text-zinc-500">
+        Side: BUY UP / BUY DOWN — відкриття; EXIT BUY / EXIT SELL — повний вихід з цього токена
+        (один LIMIT GTC на весь стек, не дрібні MARKET SELL). Notional для SUBMITTED — сума, яку
+        шлемо на біржу; після FILLED — фактичний fill.
+      </p>
       <div className="mb-4">
         <ClearDataButtons
           scopes={["paper"]}
@@ -518,11 +659,31 @@ export function OrdersPanel() {
         rows={data.orders.map((row) => [
           fmtTime(row.submittedAt),
           <MarketCell key="m" title={row.marketTitle} />,
-          row.side,
+          orderIntentLabel({
+            side: row.side,
+            outcomeName: row.outcomeName,
+            intent: row.intent ?? row.reason,
+            action: row.action,
+          }),
           <Pill key="s" tone={statusTone(row.status)}>{row.status}</Pill>,
-          fmtUsd(row.filledUsdtAmount ?? row.requestedAmount),
+          fmtUsd(
+            orderNotionalUsd({
+              status: row.status,
+              filledUsdtAmount: row.filledUsdtAmount,
+              requestedAmount: row.requestedAmount,
+            }),
+          ),
           fmtNum(row.averagePrice, 4),
-          row.reason ?? "—",
+          row.reason && row.reason !== "submitted"
+            ? row.reason
+            : row.side === "SELL"
+              ? orderIntentLabel({
+                  side: row.side,
+                  outcomeName: row.outcomeName,
+                  intent: row.intent ?? row.reason,
+                  action: row.action,
+                })
+              : "—",
         ])}
       />
       <Pager
@@ -544,6 +705,11 @@ export function SignalsPanel() {
   return (
     <Card title="Сигнали">
       <PaperBanner data={data} />
+      <p className="mb-3 max-w-3xl text-xs leading-5 text-zinc-500">
+        BUY UP — купівля токена Up. BUY DOWN — купівля токена Down (сигнал SELL). EXIT BUY / EXIT SELL —
+        повний продаж того токена. Стратегія не чіпає чужі позиції. LIVE як Paper: протилежний сигнал
+        спочатку закриває ногу, інша сторона — після CLOSED.
+      </p>
       <div className="mb-4">
         <ClearDataButtons
           scopes={["paper"]}
@@ -560,7 +726,7 @@ export function SignalsPanel() {
           fmtTime(row.timestamp),
           row.strategySlug,
           <MarketCell key="m" title={row.marketTitle} />,
-          row.direction,
+          signalIntentLabel({ direction: row.direction, outcomeName: row.outcomeName }),
           fmtNum(row.netEdge, 4),
           <Pill key="a" tone={row.accepted ? "ok" : "muted"}>{row.accepted ? "так" : "ні"}</Pill>,
           row.reason,
@@ -581,11 +747,11 @@ export function MarketsPanel() {
   const { data, error, loading } = useDashboard();
   if (!data) return <Banner error={error} loading={loading} data={data} />;
   return (
-    <Card title="Ринки · закриття протягом 24 год · bid/ask executable">
+    <Card title="Ринки · BTC/ETH/BNB 5m і 15m · bid/ask executable">
       <PaperBanner data={data} />
       <Table
         columns={["Ринок", "До кінця", "Symbol", "Bid", "Ask", "lastPrice (істор.)", "Chance", "Liq", "Книга"]}
-        empty="Немає ринків, що закриваються протягом 24 год. Після Старт сюди мають потрапити live-спорт і короткі Up/Down, не довгі FDV на кшталт $500M."
+        empty="Немає BTC/ETH/BNB 5m або 15m Up/Down у вікні до експірі. 1h/1d, SOL і спорт сюди не потрапляють."
         rows={data.markets.map((row) => [
           <span key="t">
             {row.title}
@@ -729,17 +895,6 @@ export function StrategiesPanel() {
     setData((await response.json()) as DashboardPayload);
   }
 
-  async function setEntryMode(entryMode: "all" | "single") {
-    const response = await fetch("/api/dashboard/strategies", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ entryMode }),
-    });
-    if (!response.ok) return;
-    setData((await response.json()) as DashboardPayload);
-  }
-
-  const mode = data.paperEntryMode;
   return (
     <Card title="Дослідницькі стратегії">
       <p className="mb-4 text-xs text-zinc-500">
@@ -747,38 +902,11 @@ export function StrategiesPanel() {
         реальний placeOrder. Режим задає команда запуску (`npm run dev` або `npm run dev:live`), не
         цей екран. Underlying vs window start: свічка 5m/15m відносно свого open (startPrice). Нижче
         старту → Down, вище → Up. Якщо 1м уже розвернулась — йдемо за 1м, а не за старим 15м lookback.
+        На одному вікні — одна стратегія. Протилежний сигнал спочатку закриває ногу, інша сторона
+        відкривається після CLOSED. Paper тепер як Live: ордер спочатку SUBMITTED, філ з затримкою;
+        після експірі слот звільняється одразу, 0/1 приходить пізніше. Claim у Live не блокує нові
+        входи.
       </p>
-      <div className="mb-5 rounded-xl border border-zinc-800 px-3 py-3">
-        <p className="mb-2 text-sm text-zinc-200">Вхід на одному контракті</p>
-        <p className="mb-3 text-xs leading-5 text-zinc-500">
-          «Одна стратегія» — перший сигнал займає книгу, інші не відкривають копію $50.
-          «Усі стратегії» — кожна ввімкнена може увійти окремо на той самий ринок.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void setEntryMode("single")}
-            className={
-              mode === "single"
-                ? "rounded-lg border border-emerald-800 bg-emerald-950 px-3 py-1.5 text-sm text-emerald-200"
-                : "rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
-            }
-          >
-            Одна стратегія
-          </button>
-          <button
-            type="button"
-            onClick={() => void setEntryMode("all")}
-            className={
-              mode === "all"
-                ? "rounded-lg border border-emerald-800 bg-emerald-950 px-3 py-1.5 text-sm text-emerald-200"
-                : "rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
-            }
-          >
-            Усі стратегії
-          </button>
-        </div>
-      </div>
       <div className="space-y-3">
         {data.strategies.length === 0 ? (
           <Empty>Немає рядків Strategy — запустіть prisma db seed.</Empty>

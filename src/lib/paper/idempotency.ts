@@ -10,6 +10,7 @@ export function paperIdempotencyKey(parts: {
   side: string;
   action: string;
   bucketMs: number;
+  extra?: string;
 }): string {
   const payload = stableStringify({
     mode: parts.mode,
@@ -19,6 +20,7 @@ export function paperIdempotencyKey(parts: {
     side: parts.side,
     action: parts.action,
     bucket: parts.bucketMs,
+    extra: parts.extra ?? "",
   });
   return createHash("sha256").update(payload).digest("hex");
 }

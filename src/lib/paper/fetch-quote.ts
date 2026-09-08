@@ -1,7 +1,7 @@
 import { OfficialPredictionAdapter, type GetQuoteParams } from "@/lib/binance/prediction-adapter";
 import { env } from "@/lib/config/env";
 import { childLogger } from "@/lib/logger";
-import { usdtToWei } from "@/lib/paper/amounts";
+import { quoteAmountInWei } from "@/lib/paper/amounts";
 import { paperQuoteFromOfficial, type PaperQuote } from "@/lib/paper/quote-validate";
 import { inc } from "@/lib/observability/metrics";
 
@@ -21,42 +21,72 @@ function quoteAdapter(): OfficialPredictionAdapter | null {
 }
 
 /**
- * Official getQuote for paper fills. Never sends feeRateBps or placeOrder.
- * Returns null when wallet/keys are missing or the API call fails.
+ * Official getQuote. Never sends feeRateBps or placeOrder.
  */
-export async function fetchOfficialPaperQuote(options: {
+export async function fetchOfficialPaperQuoteResult(options: {
   tokenId: string;
   side: "BUY" | "SELL";
-  amountUsdt: number;
+  amountUsdt?: number;
+  /** SELL only: tradable shares (Binance Max). Ignored on BUY. */
+  amountShares?: number;
   slippageBps: number;
-}): Promise<PaperQuote | null> {
+  orderType?: "MARKET" | "LIMIT";
+  priceLimit?: number;
+}): Promise<{ quote: PaperQuote | null; exceededShares: boolean }> {
   const wallet = env.BINANCE_PREDICTION_WALLET_ADDRESS.trim();
   if (!wallet) {
     inc("quote.skip", { reason: "no_wallet" });
-    return null;
+    return { quote: null, exceededShares: false };
   }
   const client = quoteAdapter();
   if (!client) {
     inc("quote.skip", { reason: "no_adapter" });
-    return null;
+    return { quote: null, exceededShares: false };
   }
   try {
+    const orderType = options.orderType === "LIMIT" ? "LIMIT" : "MARKET";
     const official = await client.getQuote({
       walletAddress: wallet,
       tokenId: options.tokenId,
       side: options.side as GetQuoteParams["side"],
-      amountIn: usdtToWei(options.amountUsdt),
-      orderType: "MARKET" as GetQuoteParams["orderType"],
+      amountIn: quoteAmountInWei({
+        side: options.side,
+        amountUsdt: options.amountUsdt,
+        amountShares: options.amountShares,
+      }),
+      orderType: orderType as GetQuoteParams["orderType"],
       slippageBps: Math.min(Math.max(Math.trunc(options.slippageBps), 1), 10_000),
       chainId: env.BINANCE_PREDICTION_CHAIN_ID,
+      ...(orderType === "LIMIT" && options.priceLimit != null && options.priceLimit > 0
+        ? { priceLimit: options.priceLimit.toFixed(8) }
+        : {}),
     });
     inc("quote.ok");
-    return paperQuoteFromOfficial(official);
+    return {
+      quote: {
+        ...paperQuoteFromOfficial(official),
+        orderType,
+        priceLimit: orderType === "LIMIT" ? options.priceLimit ?? null : null,
+      },
+      exceededShares: false,
+    };
   } catch (error) {
     inc("quote.fail");
-    log.warn({ err: String(error), tokenId: options.tokenId }, "getQuote failed; paper fills from last book");
-    return null;
+    const err = String(error);
+    log.warn({ err, tokenId: options.tokenId }, "getQuote failed; paper fills from last book");
+    return { quote: null, exceededShares: /exceeded your available shares/i.test(err) };
   }
+}
+
+export async function fetchOfficialPaperQuote(options: {
+  tokenId: string;
+  side: "BUY" | "SELL";
+  amountUsdt?: number;
+  amountShares?: number;
+  slippageBps: number;
+}): Promise<PaperQuote | null> {
+  const { quote } = await fetchOfficialPaperQuoteResult(options);
+  return quote;
 }
 
 export function hasPredictionWallet(): boolean {

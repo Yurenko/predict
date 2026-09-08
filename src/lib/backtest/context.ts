@@ -16,6 +16,15 @@ export function quoteAsOf(
   return lastAtOrBefore(rows, now);
 }
 
+export function clampObservedAt<T extends { observedAt: Date }>(row: T, now: Date): T {
+  if (row.observedAt.getTime() <= now.getTime()) return row;
+  return { ...row, observedAt: now };
+}
+
+export function rowsAtOrBefore<T extends { observedAt: Date }>(rows: T[], now: Date): T[] {
+  return rows.filter((row) => row.observedAt.getTime() <= now.getTime());
+}
+
 export function buildStrategyContext(options: {
   now: Date;
   tick: MarketTick;

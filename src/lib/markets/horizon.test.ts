@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyEndDate,
+  heldOrTradableMarketWhere,
+  isShortCryptoUpDownMarket,
   marketHeadline,
   parseCollectorCategories,
+  pickDiscoveredTopics,
   selectHorizonTopics,
   sortTopicsByEndDate,
+  tradableMarketWhere,
   uniqueTopicsById,
 } from "./horizon";
 
@@ -78,8 +82,110 @@ describe("topic helpers", () => {
         question: "Will $MarsCoin hit $500M FDV before October?",
       }),
     ).toBe("Will $MarsCoin hit $500M FDV before October?");
-    expect(marketHeadline({ title: "BTC Up or Down 5m", question: null })).toBe(
-      "BTC Up or Down 5m",
+    expect(
+      marketHeadline({ title: "BTC Up or Down 5m", question: null }),
+    ).toBe("BTC Up or Down 5m");
+  });
+
+  it("keeps BTC/ETH 5m ahead of 15m when the cap is tight", () => {
+    const picked = pickDiscoveredTopics(
+      [
+        { marketTopicId: "kospi", title: "KOSPI Composite Index Up or Down on September 4, 2026?", endDate: at(3 * 3600) },
+        { marketTopicId: "cs", title: "Counter-Strike: 9INE vs Rune Eaters (BO3)", endDate: at(2 * 3600) },
+        { marketTopicId: "btc5", title: "BTC Up or Down 5m", symbol: "BTCUSDT", endDate: at(240) },
+        { marketTopicId: "eth15", title: "ETH Up or Down 15m", symbol: "ETHUSDT", endDate: at(800) },
+        { marketTopicId: "hynix", title: "Will SK hynix Inc close above 1,596,000 KRW on September 4, 2026?", endDate: at(4 * 3600) },
+      ],
+      2,
+    );
+    expect(picked.map((row) => String(row.marketTopicId))).toEqual(["btc5", "eth15"]);
+  });
+
+  it("drops 1h/1d, SOL, sports, and stocks even when the cap is empty", () => {
+    const picked = pickDiscoveredTopics(
+      [
+        { marketTopicId: "btc1h", title: "BTC Up or Down 1h", symbol: "BTCUSDT", endDate: at(3600) },
+        { marketTopicId: "eth1d", title: "ETH Up or Down 1d", symbol: "ETHUSDT", endDate: at(8 * 3600) },
+        { marketTopicId: "sol5", title: "SOL Up or Down 5m", symbol: "SOLUSDT", endDate: at(240) },
+        { marketTopicId: "dota", title: "Dota 2: Team Spirit vs Falcons", endDate: at(1800) },
+        { marketTopicId: "bnb15", title: "BNB Up or Down 15m", symbol: "BNBUSDT", endDate: at(700) },
+      ],
+      20,
+    );
+    expect(picked.map((row) => String(row.marketTopicId))).toEqual(["bnb15"]);
+  });
+});
+
+describe("isShortCryptoUpDownMarket", () => {
+  it("accepts BTC/ETH/BNB 5m and 15m, including long Bitcoin titles", () => {
+    expect(
+      isShortCryptoUpDownMarket({
+        title: "BTC Up or Down 5m",
+        symbol: "BTCUSDT",
+      }),
+    ).toBe(true);
+    expect(
+      isShortCryptoUpDownMarket({
+        title: "ETH Up or Down 15m",
+        symbol: "ETHUSDT",
+      }),
+    ).toBe(true);
+    expect(
+      isShortCryptoUpDownMarket({
+        title: "BNB Up or Down 15m",
+        question: "BNB Up or Down - September 7, 3AM-3:15AM ET",
+        symbol: "BNBUSDT",
+      }),
+    ).toBe(true);
+    expect(
+      isShortCryptoUpDownMarket({
+        title: "Bitcoin Up or Down - September 7, 3AM-3:05AM ET",
+        symbol: "BTCUSDT",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects 1h, 1d, SOL, and non-crypto", () => {
+    expect(isShortCryptoUpDownMarket({ title: "BTC Up or Down 1h", symbol: "BTCUSDT" })).toBe(false);
+    expect(isShortCryptoUpDownMarket({ title: "ETH Up or Down 1d", symbol: "ETHUSDT" })).toBe(false);
+    expect(isShortCryptoUpDownMarket({ title: "SOL Up or Down 5m", symbol: "SOLUSDT" })).toBe(false);
+    expect(
+      isShortCryptoUpDownMarket({
+        title: "KOSPI Composite Index Up or Down on September 4, 2026?",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("heldOrTradableMarketWhere", () => {
+  it("keeps the 24h tradable window and OPEN positions", () => {
+    const where = heldOrTradableMarketWhere(now, { mode: "LIVE" });
+    expect(where.OR).toEqual([
+      tradableMarketWhere(now),
+      { positions: { some: { status: "OPEN", mode: "LIVE" } } },
+    ]);
+  });
+});
+
+describe("tradableMarketWhere", () => {
+  it("restricts new entries to BTC/ETH/BNB 5m and 15m", () => {
+    const where = tradableMarketWhere(now);
+    expect(where.AND).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          topic: expect.objectContaining({
+            endDate: expect.objectContaining({
+              gte: expect.any(Date),
+              lte: expect.any(Date),
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({ OR: expect.any(Array) }),
+          ]),
+        }),
+      ]),
     );
   });
 });

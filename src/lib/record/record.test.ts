@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildStrategyContext } from "@/lib/backtest/context";
 import type { MarketTick, UnderlyingTick } from "@/lib/backtest/types";
 import { createMomentumLagStrategy } from "@/lib/strategy";
-import { tickFromSnapshot } from "@/lib/normalize/tick";
+import { tickFromSnapshot, selectPrimarySnapshot } from "@/lib/normalize/tick";
 import { hypotheticalSignals, toHypothetical } from "@/lib/record/sample";
 import {
   emptyRecordControl,
@@ -94,6 +94,54 @@ describe("tickFromSnapshot", () => {
     expect(tick.bestAsk).toBe(0.45);
     expect(tick.lastPrice).toBe(0.99);
     expect(tick.tokenId).toBe("tok");
+    expect(tick.outcomeName).toBe("Yes");
+  });
+
+  it("pins a Down snapshot to the Up token and inverts the book", () => {
+    const tick = tickFromSnapshot({
+      observedAt: new Date("2026-01-01T00:00:00Z"),
+      marketId: "m1",
+      outcomeId: "down-row",
+      lastPrice: 0.2,
+      chance: 0.2,
+      bestBid: 0.19,
+      bestAsk: 0.21,
+      midPrice: 0.2,
+      spread: 0.02,
+      liquidity: 1000,
+      bidDepth: 10,
+      askDepth: 10,
+      timeToExpirySec: 120,
+      market: {
+        venueMarketId: "99",
+        topic: { symbol: "BTCUSDT", endDate: new Date("2026-01-01T01:00:00Z"), startPrice: 100 },
+        outcomes: [
+          { id: "up-row", tokenId: "up-1", name: "Up", outcomeIndex: 0 },
+          { id: "down-row", tokenId: "down-1", name: "Down", outcomeIndex: 1 },
+        ],
+      },
+      outcome: { id: "down-row", tokenId: "down-1", name: "Down" },
+    });
+    expect(tick.tokenId).toBe("up-1");
+    expect(tick.outcomeId).toBe("up-row");
+    expect(tick.outcomeName).toBe("Up");
+    expect(tick.bestBid).toBeCloseTo(0.79);
+    expect(tick.bestAsk).toBeCloseTo(0.81);
+    expect(tick.chance).toBeCloseTo(0.8);
+  });
+
+  it("prefers the Up snapshot when the latest row is Down", () => {
+    const up = { outcomeId: "up-row", bid: 1 };
+    const down = { outcomeId: "down-row", bid: 2 };
+    const picked = selectPrimarySnapshot(
+      [down, up],
+      [
+        { id: "up-row", tokenId: "up-1", name: "Up", outcomeIndex: 0 },
+        { id: "down-row", tokenId: "down-1", name: "Down", outcomeIndex: 1 },
+      ],
+    );
+    expect(picked?.snapshot).toBe(up);
+    expect(picked?.outcome?.tokenId).toBe("up-1");
   });
 });
 

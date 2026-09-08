@@ -6,6 +6,7 @@ describe("liveCycleSkip", () => {
   it("maps idle live cycles to the same skip codes as paper", () => {
     expect(liveCycleSkip(0, 0, 0)).toBe(PAPER_SKIP.noEnabledStrategies);
     expect(liveCycleSkip(2, 0, 0)).toBe(PAPER_SKIP.noNearExpiry);
+    expect(liveCycleSkip(2, 0, 0, 3)).toBe(PAPER_SKIP.waitingNextHorizon);
     expect(liveCycleSkip(2, 8, 0)).toBe(PAPER_SKIP.noEntryYet);
     expect(liveCycleSkip(2, 8, 1)).toBeNull();
   });
@@ -37,5 +38,16 @@ describe("cycleFromLiveResult", () => {
       now: new Date("2026-09-03T10:00:00.000Z"),
     });
     expect(cycle.skip).toBe("missing_wallet_id");
+  });
+
+  it("does not claim there are no markets when OPEN positions remain", () => {
+    const cycle = cycleFromLiveResult({
+      enabled: 3,
+      considered: 0,
+      submitted: 0,
+      open: 2,
+      now: new Date("2026-09-03T10:00:00.000Z"),
+    });
+    expect(cycle.skip).toBe(PAPER_SKIP.waitingNextHorizon);
   });
 });

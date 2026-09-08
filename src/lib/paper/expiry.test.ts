@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { expiryExitPrice, settlementFill } from "./expiry";
 import { paperExitPnl } from "./action";
+import {
+  paperFillReady,
+  paperSettleAt,
+  paperSettlementReady,
+  PAPER_FILL_DELAY_MS,
+  PAPER_SETTLEMENT_DELAY_MS,
+} from "./delays";
 import { OrderSide } from "@prisma/client";
 
 describe("expiryExitPrice", () => {
@@ -32,6 +39,36 @@ describe("expiryExitPrice", () => {
         avgPrice: 0.25,
       }),
     ).toBe(0.05);
+  });
+});
+
+describe("delayed paper fill", () => {
+  it("waits one paper cycle before the virtual fill lands", () => {
+    const submittedAt = new Date("2026-01-01T00:00:00.000Z");
+    expect(paperFillReady(submittedAt, submittedAt)).toBe(false);
+    expect(
+      paperFillReady(submittedAt, new Date(submittedAt.getTime() + PAPER_FILL_DELAY_MS - 1)),
+    ).toBe(false);
+    expect(
+      paperFillReady(submittedAt, new Date(submittedAt.getTime() + PAPER_FILL_DELAY_MS)),
+    ).toBe(true);
+  });
+});
+
+describe("delayed paper settlement", () => {
+  it("does not pay 0/1 until settleAt", () => {
+    const closedAt = new Date("2026-01-01T00:00:00.000Z");
+    const raw = { expired: true, settleAt: paperSettleAt(closedAt).toISOString() };
+    expect(paperSettlementReady(raw, closedAt)).toBe(false);
+    expect(
+      paperSettlementReady(raw, new Date(closedAt.getTime() + PAPER_SETTLEMENT_DELAY_MS - 1)),
+    ).toBe(false);
+    expect(
+      paperSettlementReady(raw, new Date(closedAt.getTime() + PAPER_SETTLEMENT_DELAY_MS)),
+    ).toBe(true);
+    expect(paperSettlementReady({ ...raw, closePrice: 1 }, new Date(closedAt.getTime() + 60_000))).toBe(
+      false,
+    );
   });
 });
 

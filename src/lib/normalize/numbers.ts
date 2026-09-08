@@ -52,3 +52,13 @@ export function sumLevels(
   }
   return { size, notional };
 }
+
+/** Prisma Decimal(38, 18) overflows at |x| >= 10^20. Wei leftovers get scaled. */
+export function fitPgDecimal38(value: number | null | undefined): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  const maxAbs = 1e19;
+  if (Math.abs(value) < maxAbs) return value;
+  const asUsdt = value / 1e18;
+  if (Number.isFinite(asUsdt) && Math.abs(asUsdt) < maxAbs) return asUsdt;
+  return null;
+}

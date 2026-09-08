@@ -9,6 +9,7 @@ import {
 import { binanceCredentials, env, isLiveTradingEnabled } from "@/lib/config/env";
 import { MinIntervalLimiter, withRetries } from "@/lib/binance/rate-limit";
 import { mapOfficialQuote, type OfficialQuote } from "@/lib/binance/quote";
+import { buildSapiSignedQuery } from "@/lib/binance/sapi-wss";
 
 export type ListMarketsParams = W3WPredictionRestAPI.ListPredictionMarketsRequest;
 export type GetQuoteParams = W3WPredictionRestAPI.GetQuoteRequest;
@@ -16,6 +17,11 @@ export type QueryOrderBookParams = W3WPredictionRestAPI.QueryOrderBookRequest;
 export type PlaceOrderParams = W3WPredictionRestAPI.PlaceOrderRequest;
 export type QueryOrderHistoryParams = W3WPredictionRestAPI.QueryOrderHistoryRequest;
 export type QueryActiveOrdersParams = W3WPredictionRestAPI.QueryActiveOrdersRequest;
+export type QueryPositionsParams = W3WPredictionRestAPI.QueryPositionsRequest;
+export type QuerySettledPositionHistoryParams =
+  W3WPredictionRestAPI.QuerySettledPositionHistoryRequest;
+export type BatchRedeemParams = W3WPredictionRestAPI.BatchRedeemRequest;
+export type GetRedeemStatusParams = W3WPredictionRestAPI.GetRedeemStatusRequest;
 
 export interface BinancePredictionAdapter {
   listCategories(): Promise<W3WPredictionRestAPI.ListPredictionCategoriesResponse>;
@@ -43,6 +49,16 @@ export interface BinancePredictionAdapter {
   queryActiveOrders(
     params: QueryActiveOrdersParams,
   ): Promise<W3WPredictionRestAPI.QueryActiveOrdersResponse>;
+  queryPositions(
+    params: QueryPositionsParams,
+  ): Promise<W3WPredictionRestAPI.QueryPositionsResponse>;
+  querySettledPositionHistory(
+    params: QuerySettledPositionHistoryParams,
+  ): Promise<W3WPredictionRestAPI.QuerySettledPositionHistoryResponse>;
+  batchRedeem(params: BatchRedeemParams): Promise<W3WPredictionRestAPI.BatchRedeemResponse>;
+  getRedeemStatus(
+    params: GetRedeemStatusParams,
+  ): Promise<W3WPredictionRestAPI.GetRedeemStatusResponse>;
   listPredictionWallets(): Promise<W3WPredictionRestAPI.ListPredictionWalletsResponse>;
 }
 
@@ -143,6 +159,52 @@ export class OfficialPredictionAdapter implements BinancePredictionAdapter {
 
   queryActiveOrders(params: QueryActiveOrdersParams) {
     return this.call(() => this.client.restAPI.queryActiveOrders(params));
+  }
+
+  queryPositions(params: QueryPositionsParams) {
+    return this.call(() => this.client.restAPI.queryPositions(params));
+  }
+
+  querySettledPositionHistory(params: QuerySettledPositionHistoryParams) {
+    return this.call(() => this.client.restAPI.querySettledPositionHistory(params));
+  }
+
+  async batchRedeem(params: BatchRedeemParams): Promise<W3WPredictionRestAPI.BatchRedeemResponse> {
+    if (!isLiveTradingEnabled()) {
+      throw new Error("batchRedeem refused: LIVE_TRADING_ENABLED=true and TRADING_MODE=LIVE are required");
+    }
+    return this.call(async () => {
+      const { apiKey, apiSecret } = binanceCredentials();
+      if (!apiKey || !apiSecret) {
+        throw new Error("batchRedeem refused: live API credentials are missing");
+      }
+      const pairs: Array<[string, string]> = [
+        ["walletAddress", params.walletAddress],
+        ["walletId", params.walletId],
+        ["chainId", params.chainId ?? env.BINANCE_PREDICTION_CHAIN_ID],
+      ];
+      for (const tokenId of params.tokenIds) {
+        if (tokenId) pairs.push(["tokenIds", tokenId]);
+      }
+      const { query } = buildSapiSignedQuery({ apiSecret, pairs });
+      const url = `${env.BINANCE_PREDICTION_REST_BASE_URL.replace(/\/$/, "")}/sapi/v1/w3w/wallet/prediction/batch-redeem?${query}`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "X-MBX-APIKEY": apiKey },
+      });
+      const body = (await response.json()) as W3WPredictionRestAPI.BatchRedeemResponse & {
+        code?: number;
+        msg?: string;
+      };
+      if (!response.ok || (body.code != null && body.code !== 0 && !body.batchId && !body.results)) {
+        throw new Error(`batchRedeem ${response.status}: ${body.msg ?? body.code ?? "failed"}`);
+      }
+      return { data: async () => body };
+    });
+  }
+
+  getRedeemStatus(params: GetRedeemStatusParams) {
+    return this.call(() => this.client.restAPI.getRedeemStatus(params));
   }
 
   listPredictionWallets() {

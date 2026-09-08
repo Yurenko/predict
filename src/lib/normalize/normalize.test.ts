@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { normalizeOrderbook, timeToExpirySec } from "./orderbook";
-import { normalizeMarketDetail, pickPrimaryOutcome } from "./markets";
+import { normalizeMarketDetail, pickComplementOutcome, pickPrimaryOutcome } from "./markets";
 import { normalizeUnderlyingTicker } from "./underlying";
+import { fitPgDecimal38 } from "./numbers";
 
 describe("normalizeOrderbook", () => {
   it("uses the book mid as chance and never fills lastPrice", () => {
@@ -67,6 +68,7 @@ describe("normalizeMarketDetail", () => {
     expect(topic?.symbol).toBe("BTCUSDT");
     expect(topic?.markets[0]?.venueMarketId).toBe("42");
     expect(pickPrimaryOutcome(topic?.markets[0]?.outcomes ?? [])?.tokenId).toBe("yes-1");
+    expect(pickComplementOutcome(topic?.markets[0]?.outcomes ?? [], "yes-1")?.tokenId).toBe("no-1");
   });
 });
 
@@ -91,5 +93,17 @@ describe("timeToExpirySec", () => {
     const end = new Date("2026-09-01T00:02:00.000Z");
     expect(timeToExpirySec(end, observed)).toBe(120);
     expect(timeToExpirySec(null, observed)).toBeNull();
+  });
+});
+
+describe("fitPgDecimal38", () => {
+  it("keeps ordinary USDT amounts", () => {
+    expect(fitPgDecimal38(1.5)).toBe(1.5);
+    expect(fitPgDecimal38(0.96)).toBe(0.96);
+  });
+
+  it("scales wei that would overflow Decimal(38,18)", () => {
+    expect(fitPgDecimal38(2e20)).toBeCloseTo(200);
+    expect(fitPgDecimal38(1e38)).toBeNull();
   });
 });

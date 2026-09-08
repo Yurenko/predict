@@ -4,7 +4,7 @@ import { runRestSyncOnce } from "../../../workers/src/collectors/rest-sync";
 import { startPredictionWsCollector } from "../../../workers/src/collectors/prediction-ws";
 import { startUnderlyingWsCollector } from "../../../workers/src/collectors/underlying-ws";
 import { runPaperOnce } from "../../../workers/src/execution/service";
-import { runLiveOnce } from "../../../workers/src/execution/live";
+import { runLiveOnce, settleExpiredLivePositions } from "../../../workers/src/execution/live";
 import {
   closeRunningSessions,
   readRecordControl,
@@ -16,6 +16,7 @@ import { sampleRecordOnce } from "@/lib/record/sample";
 import { writePaperCycle } from "@/lib/paper/cycle";
 import { isPidAlive } from "@/lib/record/types";
 import { sleep } from "@/lib/binance/rate-limit";
+import { syncLiveOrdersFromVenue, syncLivePositionsFromVenue } from "@/lib/live";
 
 const log = childLogger({ component: "record-loop" });
 
@@ -139,6 +140,7 @@ export async function runRecordLoop(options: { exitOnSignal?: boolean } = {}): P
     process.on("SIGTERM", () => void shutdown("SIGTERM"));
   }
 
+  let lastStoppedSyncAt = 0;
   while (true) {
     const control = await readRecordControl();
     if (control.desired === "running" && control.sessionId) {
@@ -151,6 +153,27 @@ export async function runRecordLoop(options: { exitOnSignal?: boolean } = {}): P
         await runSessionCycle();
       } catch (error) {
         await rememberError(error, live ? "live cycle failed" : "paper cycle failed");
+      }
+    } else if (live && Date.now() - lastStoppedSyncAt >= env.LIVE_LOOP_INTERVAL_MS) {
+      lastStoppedSyncAt = Date.now();
+      try {
+        const runtime = await ensureLiveRuntime();
+        if (runtime.ok) {
+          const applied = await syncLiveOrdersFromVenue(runtime.venue, runtime.ctx.walletAddress);
+          if (applied > 0) {
+            log.info({ applied }, "live reconcile while stopped");
+          }
+          const settled = await settleExpiredLivePositions();
+          if (settled.filled > 0) {
+            log.info({ filled: settled.filled }, "live expiry flatten while stopped");
+          }
+          const venueSync = await syncLivePositionsFromVenue(runtime.venue, runtime.ctx);
+          if (venueSync.updated > 0 || venueSync.claimed > 0) {
+            log.info(venueSync, "live venue sync while stopped");
+          }
+        }
+      } catch (error) {
+        log.warn({ err: String(error) }, "live reconcile while stopped failed");
       }
     }
     await sleep(env.RECORD_LOOP_INTERVAL_MS);

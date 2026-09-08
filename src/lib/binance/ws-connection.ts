@@ -159,7 +159,11 @@ export class ManagedWebSocket {
     this.clearTimers();
     this.lastMessageAt = Date.now();
 
-    if (this.options.pingIntervalMs) {
+    const pingEvery = effectivePingIntervalMs(
+      this.options.staleMs,
+      this.options.pingIntervalMs,
+    );
+    if (pingEvery) {
       this.pingTimer = setInterval(() => {
         if (socket.readyState !== WebSocket.OPEN) return;
         if (this.options.applicationPing) {
@@ -168,7 +172,7 @@ export class ManagedWebSocket {
           return;
         }
         socket.ping();
-      }, this.options.pingIntervalMs);
+      }, pingEvery);
     }
 
     this.staleTimer = setInterval(() => {
@@ -238,6 +242,15 @@ export class ManagedWebSocket {
       setTimeout(resolve, 250);
     });
   }
+}
+
+/** Keepalive must beat the stale watchdog or a quiet orderbook reconnects forever. */
+export function effectivePingIntervalMs(
+  staleMs: number,
+  pingIntervalMs?: number,
+): number | null {
+  if (!pingIntervalMs || pingIntervalMs <= 0) return null;
+  return Math.min(pingIntervalMs, Math.max(1_000, Math.floor(staleMs / 2)));
 }
 
 export function reconnectDelayAfterClose(options: {

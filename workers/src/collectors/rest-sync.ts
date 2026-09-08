@@ -13,10 +13,11 @@ import {
   LIST_MAX_PAGES,
   LIST_PAGE_SIZE,
   parseCollectorCategories,
+  pickDiscoveredTopics,
   selectHorizonTopics,
-  sortTopicsByEndDate,
   uniqueTopicsById,
 } from "@/lib/markets/horizon";
+import { pickPrimaryOutcome } from "@/lib/normalize/markets";
 import { upsertNormalizedTopic } from "@/lib/normalize/store";
 import { sleep } from "@/lib/binance/rate-limit";
 
@@ -91,7 +92,7 @@ async function listNearExpiryTopics(
     }
   }
 
-  return sortTopicsByEndDate(uniqueTopicsById(collected)).slice(0, env.COLLECTOR_MAX_TOPICS);
+  return pickDiscoveredTopics(uniqueTopicsById(collected), env.COLLECTOR_MAX_TOPICS);
 }
 
 export async function runRestSyncOnce(
@@ -164,7 +165,16 @@ export async function seedRestOrderbooks(
     for (const market of topic.markets) {
       if (seeded >= budget) break;
       const marketId = toNumericId(market.marketId);
-      const tokenId = market.outcomes[0]?.tokenId;
+      const primary = pickPrimaryOutcome(
+        market.outcomes.map((outcome) => ({
+          tokenId: outcome.tokenId,
+          name: outcome.name ?? "unknown",
+          outcomeIndex: null,
+          lastChance: null,
+          lastPrice: null,
+        })),
+      );
+      const tokenId = primary?.tokenId ?? market.outcomes[0]?.tokenId;
       if (marketId === null || !tokenId) continue;
 
       try {

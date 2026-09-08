@@ -2,17 +2,26 @@
 
 import { useState } from "react";
 
+export const DASHBOARD_RESET_EVENT = "botpol-dashboard-reset";
+
 const COPY: Record<"paper" | "record", { label: string; confirm: string }> = {
   paper: {
     label: "Очистити позиції / ордери / сигнали",
     confirm:
-      "Видалити демо-позиції, ордери, сигнали і скинути equity на $1000? Спочатку Стоп, інакше воркер може знову записати старий рахунок. Ринки й стрічка Запису залишаться.",
+      "Видалити локальні позиції, ордери і сигнали (paper і LIVE) і скинути equity? Спочатку Стоп. Угоди на Binance не скасовуються — лише книга бота. Ринки й стрічка Запису залишаться.",
   },
   record: {
     label: "Очистити стрічку запису",
-    confirm: "Видалити всі сесії й тіки на вкладці Запис? Позиції не чіпаємо.",
+    confirm:
+      "Видалити всі сесії й тіки на вкладці Запис? Позиції не чіпаємо. Якщо сесія ще крутиться — спочатку Стоп.",
   },
 };
+
+function resetErrorText(code: string): string {
+  if (code === "stop_first") return "Спочатку Стоп, потім очищення";
+  if (code === "reset failed") return "Очищення не вдалося — перевірте логи воркера";
+  return code;
+}
 
 export function ClearDataButtons({
   scopes,
@@ -36,8 +45,9 @@ export function ClearDataButtons({
       });
       if (!response.ok) {
         const json = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(json?.error ?? `HTTP ${response.status}`);
+        throw new Error(resetErrorText(json?.error ?? `HTTP ${response.status}`));
       }
+      window.dispatchEvent(new Event(DASHBOARD_RESET_EVENT));
       await onDone?.();
     } catch (err) {
       setError(String(err));

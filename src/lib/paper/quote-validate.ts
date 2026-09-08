@@ -13,6 +13,8 @@ export interface PaperQuote {
   priceImpact: number | null;
   minReceive: number | null;
   expireAt: Date | null;
+  orderType?: "MARKET" | "LIMIT";
+  priceLimit?: number | null;
 }
 
 export type QuoteValidation =
@@ -60,7 +62,7 @@ export function paperQuoteFromOfficial(quote: OfficialQuote): PaperQuote {
     feeRateBps: typeof quote.feeRateBps === "number" ? quote.feeRateBps : null,
     slippageBps: typeof quote.slippageBps === "number" ? quote.slippageBps : null,
     priceImpact: typeof quote.priceImpact === "number" ? quote.priceImpact : null,
-    minReceive: asNumber(quote.minReceive),
+    minReceive: feeAmountToUsdt(quote.minReceive) ?? asNumber(quote.minReceive),
     expireAt: expireAtFromUnknown(quote.expireAt),
   };
 }

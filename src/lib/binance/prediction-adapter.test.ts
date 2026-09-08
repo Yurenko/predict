@@ -75,4 +75,20 @@ describe("OfficialPredictionAdapter.getQuote", () => {
     ).rejects.toThrow(/placeOrder refused/);
     expect(placeOrder).not.toHaveBeenCalled();
   });
+
+  it("refuses batchRedeem when live flags are off", async () => {
+    const batchRedeem = vi.fn();
+    const adapter = new OfficialPredictionAdapter(
+      { restAPI: { batchRedeem } } as unknown as W3WPrediction,
+      new MinIntervalLimiter(0),
+    );
+    await expect(
+      adapter.batchRedeem({
+        walletAddress: "0xabc",
+        walletId: "w-1",
+        tokenIds: ["tok-1"],
+      }),
+    ).rejects.toThrow(/batchRedeem refused/);
+    expect(batchRedeem).not.toHaveBeenCalled();
+  });
 });

@@ -7,7 +7,9 @@ export default function PositionsPage() {
         <h1 className="text-3xl font-semibold tracking-tight">Позиції</h1>
         <p className="max-w-2xl text-sm leading-6 text-zinc-400">
           Avg = вхід, Mark = жива книга поки OPEN, Exit = ціна закриття. «До кінця» — експірі ринку.
-          Кнопка Закрити знімає OPEN по поточній книзі, не чекаючи стратегії чи експірі.
+          Кнопка Закрити знімає OPEN по поточній книзі, не чекаючи стратегії чи експірі. У LIVE це
+          реальний SELL на Binance і він працює навіть після Стоп. Після експірі claim
+          (batchRedeem / «Отримати все») йде окремо і не блокує новий вхід, якщо USDT вже вистачає.
         </p>
       </header>
       <PositionsPanel />

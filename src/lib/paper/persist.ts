@@ -3,9 +3,12 @@ import {
   OrderType,
   PositionStatus,
   Prisma,
+  TradingMode,
 } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { childLogger } from "@/lib/logger";
+import { stampLiveFlatten } from "@/lib/live/flatten";
+import { asNumber, fitPgDecimal38 } from "@/lib/normalize/numbers";
 import { paperExitPnl } from "@/lib/paper/action";
 import type { PaperTradeRequest, PaperTradeResult } from "@/lib/paper/engine";
 import type { StrategySignal } from "@/lib/types/domain";
@@ -50,17 +53,17 @@ export async function persistPaperTrade(options: {
           outcomeId: options.request.outcomeId,
           tokenId: options.request.tokenId,
           side: options.result.side,
-          orderType: OrderType.MARKET,
-          chance: q.chance,
-          amountIn: options.request.requestedNotional,
-          amountOut: options.result.fill?.shares ?? 0,
-          averagePrice: q.averagePrice,
-          lastPrice: q.lastPrice,
-          priceImpact: q.priceImpact,
-          feeAmount: q.feeAmount,
+          orderType: options.request.orderType === "LIMIT" ? OrderType.LIMIT : OrderType.MARKET,
+          chance: fitPgDecimal38(q.chance),
+          amountIn: fitPgDecimal38(options.request.requestedNotional) ?? 0,
+          amountOut: fitPgDecimal38(options.result.fill?.shares) ?? 0,
+          averagePrice: fitPgDecimal38(q.averagePrice),
+          lastPrice: fitPgDecimal38(q.lastPrice),
+          priceImpact: fitPgDecimal38(q.priceImpact),
+          feeAmount: fitPgDecimal38(q.feeAmount),
           feeRateBps: q.feeRateBps,
           slippageBps: q.slippageBps,
-          minReceive: q.minReceive,
+          minReceive: fitPgDecimal38(q.minReceive),
           expireAt: q.expireAt,
           quotedAt: options.request.now,
         },
@@ -90,7 +93,8 @@ export async function persistPaperTrade(options: {
           riskChecks: options.signal.riskChecks as unknown as Prisma.InputJsonValue,
           accepted:
             options.result.status === OrderStatus.FILLED ||
-            options.result.status === OrderStatus.PARTIALLY_FILLED,
+            options.result.status === OrderStatus.PARTIALLY_FILLED ||
+            options.result.status === OrderStatus.SUBMITTED,
         },
       });
       signalId = saved.id;
@@ -114,7 +118,17 @@ export async function persistPaperTrade(options: {
               options.result.status === OrderStatus.SUBMITTED
                 ? null
                 : options.request.now,
-            rawPayload: { reason: options.result.reason } as Prisma.InputJsonValue,
+            rawPayload: {
+              ...(existing.rawPayload &&
+              typeof existing.rawPayload === "object" &&
+              !Array.isArray(existing.rawPayload)
+                ? (existing.rawPayload as Record<string, unknown>)
+                : {}),
+              reason: options.result.reason,
+              action: options.request.action,
+              intent: options.request.exitIntent ?? options.result.reason,
+              positionId: options.request.positionId ?? null,
+            } as Prisma.InputJsonValue,
           },
         })
       : await prisma.order.create({
@@ -129,7 +143,7 @@ export async function persistPaperTrade(options: {
             outcomeId: options.request.outcomeId,
             tokenId: options.request.tokenId,
             side: options.result.side,
-            orderType: OrderType.MARKET,
+            orderType: options.result.orderType,
             status: options.result.status,
             requestedAmount: options.request.requestedNotional,
             slippageBps: q?.slippageBps,
@@ -151,26 +165,47 @@ export async function persistPaperTrade(options: {
               options.result.status === OrderStatus.SUBMITTED
                 ? null
                 : options.request.now,
-            rawPayload: { reason: options.result.reason } as Prisma.InputJsonValue,
+            rawPayload: {
+              reason: options.result.reason,
+              action: options.request.action,
+              intent: options.request.exitIntent ?? options.result.reason,
+              positionId: options.request.positionId ?? null,
+            } as Prisma.InputJsonValue,
           },
         });
 
-    if (!fill) return { realizedPnl: null };
+    const openWhere = options.request.positionId
+      ? {
+          id: options.request.positionId,
+          mode: options.request.mode,
+          status: PositionStatus.OPEN,
+        }
+      : {
+          mode: options.request.mode,
+          status: PositionStatus.OPEN,
+          marketId: market.id,
+          tokenId: options.request.tokenId,
+          ...(strategy ? { strategyId: strategy.id } : {}),
+        };
+
+    if (!fill) {
+      if (options.request.action === "EXIT" && options.request.mode === TradingMode.LIVE) {
+        const pending = await prisma.position.findFirst({ where: openWhere });
+        if (pending) {
+          await prisma.position.update({
+            where: { id: pending.id },
+            data: { rawPayload: stampLiveFlatten(pending.rawPayload) as Prisma.InputJsonValue },
+          });
+        }
+      }
+      return { realizedPnl: null };
+    }
 
     const open = await prisma.position.findFirst({
-      where: options.request.positionId
-        ? {
-            id: options.request.positionId,
-            mode: options.request.mode,
-            status: PositionStatus.OPEN,
-          }
-        : {
-            mode: options.request.mode,
-            status: PositionStatus.OPEN,
-            marketId: market.id,
-            tokenId: options.request.tokenId,
-            ...(strategy ? { strategyId: strategy.id } : {}),
-          },
+      where:
+        options.request.positionId && options.result.reason === "expired"
+          ? { id: options.request.positionId, mode: options.request.mode }
+          : openWhere,
     });
 
     let positionId = open?.id;
@@ -220,6 +255,7 @@ export async function persistPaperTrade(options: {
               ? (open.rawPayload as Record<string, unknown>)
               : {}),
             closePrice: fill.price,
+            ...(options.result.reason === "expired" ? { expired: true, settled: true } : {}),
           } as Prisma.InputJsonValue,
         },
       });

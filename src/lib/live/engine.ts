@@ -12,7 +12,8 @@ import { clientOrderIdFromKey, paperIdempotencyKey, timeBucket } from "@/lib/pap
 import { validateQuoteForFill } from "@/lib/paper/quote-validate";
 import type { PaperTradeRequest, PaperTradeResult } from "@/lib/paper/engine";
 import { assertLiveExecution } from "@/lib/live/gate";
-import { buildMarketPlaceOrder } from "@/lib/live/place";
+import { buildLimitPlaceOrder, buildMarketPlaceOrder } from "@/lib/live/place";
+import { LIVE_MIN_ORDER_USDT, maxLiveEnterNotional } from "@/lib/live/notional";
 import { inc } from "@/lib/observability/metrics";
 
 export interface LiveVenue {
@@ -76,7 +77,12 @@ export async function executeLiveTrade(
 ): Promise<LiveTradeResult> {
   assertLiveExecution(request.mode);
 
-  const side = paperOrderSide(request.action, request.signal.direction, request.positionSide);
+  const side = paperOrderSide(
+    request.action,
+    request.signal.direction,
+    request.positionSide,
+    request.orderSide,
+  );
 
   const key = paperIdempotencyKey({
     mode: TradingMode.LIVE,
@@ -86,6 +92,7 @@ export async function executeLiveTrade(
     side,
     action: request.action,
     bucketMs: timeBucket(request.now, request.idempotencyWindowMs ?? 5_000),
+    extra: request.idempotencySalt,
   });
 
   const existing = seen.get(key);
@@ -94,8 +101,15 @@ export async function executeLiveTrade(
     return { ...existing, duplicate: true };
   }
 
-  if (request.requestedNotional < 1.5) {
+  if (request.action === "ENTER" && request.requestedNotional < LIVE_MIN_ORDER_USDT) {
     return fail(key, OrderStatus.FAILED, "below_market_min_amount", side, false);
+  }
+
+  if (request.action === "ENTER") {
+    const maxOrder = maxLiveEnterNotional(limits);
+    if (request.requestedNotional > maxOrder + 1e-9) {
+      return fail(key, OrderStatus.FAILED, "above_max_position", side, false);
+    }
   }
 
   const quoteCheck = validateQuoteForFill({
@@ -145,13 +159,24 @@ export async function executeLiveTrade(
   }
 
   const slippageBps = quoteCheck.quote.slippageBps ?? limits.maxSlippageBps;
-  const body = buildMarketPlaceOrder({
-    walletAddress: ctx.walletAddress,
-    walletId: ctx.walletId,
-    quoteId: quoteCheck.quote.quoteId,
-    slippageBps,
-    accountType: ctx.accountType,
-  });
+  const limitPrice = request.priceLimit ?? request.quote?.priceLimit ?? null;
+  const useLimit = request.action === "EXIT" && request.orderType === "LIMIT" && limitPrice != null && limitPrice > 0;
+  const body = useLimit
+    ? buildLimitPlaceOrder({
+        walletAddress: ctx.walletAddress,
+        walletId: ctx.walletId,
+        quoteId: quoteCheck.quote.quoteId,
+        slippageBps,
+        accountType: ctx.accountType,
+        priceLimit: limitPrice,
+      })
+    : buildMarketPlaceOrder({
+        walletAddress: ctx.walletAddress,
+        walletId: ctx.walletId,
+        quoteId: quoteCheck.quote.quoteId,
+        slippageBps,
+        accountType: ctx.accountType,
+      });
 
   try {
     const placed = await venue.placeOrder(body);
@@ -164,10 +189,10 @@ export async function executeLiveTrade(
       idempotencyKey: key,
       status: OrderStatus.SUBMITTED,
       side,
-      reason: "submitted",
+      reason: request.exitIntent ?? "submitted",
       fill: null,
       riskAllowed: true,
-      orderType: OrderType.MARKET,
+      orderType: useLimit ? OrderType.LIMIT : OrderType.MARKET,
       riskDecision: decision,
       venueOrderId: placed.orderId,
       placed: true,

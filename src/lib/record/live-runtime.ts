@@ -1,6 +1,7 @@
 import { OfficialPredictionAdapter } from "@/lib/binance/prediction-adapter";
 import { env } from "@/lib/config/env";
-import { resolveWalletId, type LiveTradeContext } from "@/lib/live";
+import type { LiveTradeContext } from "@/lib/live/engine";
+import { resolveWalletId } from "@/lib/live/wallet";
 import { childLogger } from "@/lib/logger";
 
 const log = childLogger({ component: "live-runtime" });

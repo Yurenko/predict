@@ -42,10 +42,20 @@ export interface PaperTradeRequest {
   maxPriceImpact: number;
   /** Required for EXIT so we sell a long / buy back a short. */
   positionSide?: OrderSide;
+  /** Binary Up/Down: ENTER always BUY of the chosen token, EXIT always SELL. */
+  orderSide?: OrderSide;
   /** When set, EXIT closes this row instead of the first matching open. */
   positionId?: string;
   idempotencyWindowMs?: number;
+  /** Distinguishes flatten retries after a partial SELL in the same time bucket. */
+  idempotencySalt?: string;
+  orderType?: "MARKET" | "LIMIT";
+  priceLimit?: number;
+  /** Shown on the Orders tab: EXIT BUY / EXIT SELL. */
+  exitIntent?: string;
 }
+
+export type PaperExecutionStage = "immediate" | "submit" | "fill";
 
 export interface PaperTradeResult {
   duplicate: boolean;
@@ -113,7 +123,12 @@ export function skippedPaperTrade(
   request: PaperTradeRequest,
   reason: string,
 ): PaperTradeResult {
-  const side = paperOrderSide(request.action, request.signal.direction, request.positionSide);
+  const side = paperOrderSide(
+    request.action,
+    request.signal.direction,
+    request.positionSide,
+    request.orderSide,
+  );
   const key = paperIdempotencyKey({
     mode: request.mode,
     strategyId: request.strategyId,
@@ -149,28 +164,38 @@ function demoFillFromBook(
 /**
  * Simulate a paper fill. Never sends a Binance placeOrder.
  * LIVE mode is refused here; Phase 11 owns live submission.
+ * `submit` stops at SUBMITTED (LIVE-style delay). `fill` completes that order.
  */
 export function executePaperTrade(
   request: PaperTradeRequest,
   riskState: RiskSnapshot,
   limits: RiskLimits,
+  options: { stage?: PaperExecutionStage; idempotencyKey?: string } = {},
 ): PaperTradeResult {
   assertPaperExecution(request.mode);
+  const stage = options.stage ?? "immediate";
 
-  const side = paperOrderSide(request.action, request.signal.direction, request.positionSide);
+  const side = paperOrderSide(
+    request.action,
+    request.signal.direction,
+    request.positionSide,
+    request.orderSide,
+  );
 
-  const key = paperIdempotencyKey({
-    mode: request.mode,
-    strategyId: request.strategyId,
-    marketId: request.marketId,
-    tokenId: request.tokenId,
-    side,
-    action: request.action,
-    bucketMs: timeBucket(request.now, request.idempotencyWindowMs ?? 5_000),
-  });
+  const key =
+    options.idempotencyKey ??
+    paperIdempotencyKey({
+      mode: request.mode,
+      strategyId: request.strategyId,
+      marketId: request.marketId,
+      tokenId: request.tokenId,
+      side,
+      action: request.action,
+      bucketMs: timeBucket(request.now, request.idempotencyWindowMs ?? 5_000),
+    });
 
   const existing = seen.get(key);
-  if (existing) {
+  if (existing && (stage !== "fill" || existing.status !== OrderStatus.SUBMITTED)) {
     inc("paper.duplicate");
     return { ...existing, duplicate: true };
   }
@@ -234,6 +259,24 @@ export function executePaperTrade(
   }
 
   transitionOrder(OrderStatus.PENDING, OrderStatus.SUBMITTED);
+
+  if (stage === "submit") {
+    const result: PaperTradeResult = {
+      duplicate: false,
+      clientOrderId: clientOrderIdFromKey(key),
+      idempotencyKey: key,
+      status: OrderStatus.SUBMITTED,
+      side,
+      reason: "submitted",
+      fill: null,
+      riskAllowed: true,
+      orderType: OrderType.MARKET,
+      riskDecision: decision,
+    };
+    inc("paper.order", { status: result.status, reason: result.reason });
+    seen.set(key, result);
+    return result;
+  }
 
   const fill = simulateFill({
     side,

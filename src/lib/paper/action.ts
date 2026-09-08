@@ -25,7 +25,9 @@ export function paperOrderSide(
   action: Exclude<PaperAction, "HOLD">,
   direction: SignalDirection,
   positionSide?: OrderSide | null,
+  override?: OrderSide | null,
 ): OrderSide {
+  if (override) return override;
   if (action === "EXIT") {
     return positionSide === OrderSide.BUY ? OrderSide.SELL : OrderSide.BUY;
   }

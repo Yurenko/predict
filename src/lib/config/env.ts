@@ -43,7 +43,7 @@ const envSchema = z.object({
   COLLECTOR_MAX_TIME_TO_EXPIRY_SEC: z.coerce.number().int().positive().default(86_400),
   COLLECTOR_UNDERLYING_SYMBOLS: z
     .string()
-    .default("BTCUSDT,ETHUSDT,SOLUSDT")
+    .default("BTCUSDT,ETHUSDT,BNBUSDT")
     .transform((value) =>
       value
         .split(",")

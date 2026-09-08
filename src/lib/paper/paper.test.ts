@@ -8,7 +8,7 @@ import { canTransition, transitionOrder } from "./state-machine";
 import { validateQuoteForFill, type PaperQuote } from "./quote-validate";
 import { paperIdempotencyKey, timeBucket } from "./idempotency";
 import { decidePaperAction, isDuplicatePaperEnter, paperOrderSide } from "./action";
-import { usdtToWei } from "./amounts";
+import { quoteAmountInWei, usdtToWei } from "./amounts";
 
 function limits(): RiskLimits {
   return {
@@ -146,6 +146,18 @@ describe("executePaperTrade", () => {
     resetPaperIdempotencyCache();
   });
 
+  it("can submit now and fill on a later pass like LIVE", () => {
+    const submitted = executePaperTrade(request(), emptyRiskSnapshot(lim), lim, { stage: "submit" });
+    expect(submitted.status).toBe(OrderStatus.SUBMITTED);
+    expect(submitted.fill).toBeNull();
+    const filledLater = executePaperTrade(request(), emptyRiskSnapshot(lim), lim, {
+      stage: "fill",
+      idempotencyKey: submitted.idempotencyKey,
+    });
+    expect(filledLater.status).toBe(OrderStatus.FILLED);
+    expect(filledLater.fill?.price).toBeCloseTo(0.46);
+  });
+
   it("fills at the quote average, not lastPrice", () => {
     const result = executePaperTrade(request(), emptyRiskSnapshot(lim), lim);
     expect(result.status).toBe(OrderStatus.FILLED);
@@ -218,6 +230,7 @@ describe("paper helpers", () => {
     expect(decidePaperAction("EXIT", null)).toBe("HOLD");
     expect(decidePaperAction("FLAT", null)).toBe("HOLD");
     expect(paperOrderSide("EXIT", "BUY", "BUY")).toBe("SELL");
+    expect(paperOrderSide("ENTER", "SELL", null, "BUY")).toBe("BUY");
   });
 
   it("skips a second ENTER when another strategy already holds the same contract", () => {
@@ -231,6 +244,12 @@ describe("paper helpers", () => {
     expect(usdtToWei(1.5)).toBe("1500000000000000000");
     expect(usdtToWei(50)).toBe("50000000000000000000");
     expect(() => usdtToWei(0)).toThrow(/positive/);
+  });
+
+  it("encodes SELL getQuote amountIn as shares, not USDT notional", () => {
+    expect(quoteAmountInWei({ side: "BUY", amountUsdt: 2 })).toBe("2000000000000000000");
+    expect(quoteAmountInWei({ side: "SELL", amountShares: 5 })).toBe("5000000000000000000");
+    expect(() => quoteAmountInWei({ side: "SELL", amountUsdt: 1.18 })).toThrow(/shares/);
   });
 });
 
@@ -253,6 +272,7 @@ describe("paper cycle snapshot", () => {
     const { paperSkipLabel, PAPER_SKIP } = await import("./skip");
     expect(paperSkipLabel(PAPER_SKIP.noPredictionBook)).toMatch(/prediction/);
     expect(paperSkipLabel(PAPER_SKIP.noPredictionBook)).toMatch(/книгою|книзі|книги/i);
+    expect(paperSkipLabel(PAPER_SKIP.waitingNextHorizon)).toMatch(/відкриті позиції/i);
     expect(paperSkipLabel(null)).toBeNull();
     expect(paperSkipLabel("already ukrainian")).toBe("already ukrainian");
   });

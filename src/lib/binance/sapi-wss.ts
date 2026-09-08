@@ -21,6 +21,19 @@ export function sapiPingMessage(): Record<string, unknown> {
  * Params (excluding signature) are sorted alphabetically, then HMAC-SHA256.
  * @see https://developers.binance.com/en/docs/products/w3w-prediction/websocket-api/orderbook.md
  */
+/** Signed SAPI query. Repeated keys (tokenIds=a&tokenIds=b) stay intact for batchRedeem. */
+export function buildSapiSignedQuery(options: {
+  apiSecret: string;
+  pairs: Array<[string, string]>;
+  timestampMs?: number;
+}): { query: string; payload: string; signature: string } {
+  const pairs = [...options.pairs, ["timestamp", String(options.timestampMs ?? Date.now())]];
+  pairs.sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
+  const payload = pairs.map(([key, value]) => `${key}=${value}`).join("&");
+  const signature = createHmac("sha256", options.apiSecret).update(payload).digest("hex");
+  return { payload, signature, query: `${payload}&signature=${signature}` };
+}
+
 export function buildSapiWssUrl(options: {
   baseUrl?: string;
   apiSecret: string;

@@ -24,7 +24,9 @@ function pos(partial: Partial<DashboardPosition> & Pick<DashboardPosition, "id" 
     openedAt: "2026-09-01T00:00:00.000Z",
     closedAt: null,
     endDate: null,
+    claimStatus: null,
     markHeld: false,
+    outcomeName: null,
     ...partial,
   };
 }

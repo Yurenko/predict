@@ -42,8 +42,22 @@ describe("closedExitPrice", () => {
     expect(
       closedExitPrice({
         status: "CLOSED",
+        rawPayload: { expired: true, closePrice: 0 },
         executions: [{ executedAt: "2026-09-02T01:00:00Z", price: 0 }],
       }),
     ).toBe(0);
+  });
+
+  it("does not let a later settlement 0 hide a book exit fill", () => {
+    expect(
+      closedExitPrice({
+        status: "CLOSED",
+        rawPayload: { expired: true, closePrice: 0 },
+        executions: [
+          { executedAt: "2026-09-03T16:18:39Z", price: 0.22 },
+          { executedAt: "2026-09-03T16:15:42Z", price: 0.14 },
+        ],
+      }),
+    ).toBe(0.22);
   });
 });

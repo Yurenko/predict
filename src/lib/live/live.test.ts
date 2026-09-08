@@ -6,7 +6,7 @@ import type { RiskLimits } from "@/lib/risk/types";
 import { OfficialPredictionAdapter } from "@/lib/binance/prediction-adapter";
 import { MinIntervalLimiter } from "@/lib/binance/rate-limit";
 import type { W3WPrediction } from "@binance/w3w-prediction";
-import { buildMarketPlaceOrder } from "./place";
+import { buildLimitPlaceOrder, buildMarketPlaceOrder } from "./place";
 import { mapOfficialOrderStatus } from "./status";
 import { resolveWalletId } from "./wallet";
 import { executeLiveTrade, resetLiveIdempotencyCache } from "./engine";
@@ -122,6 +122,22 @@ describe("official live helpers", () => {
     expect(body).not.toHaveProperty("feeRateBps");
   });
 
+  it("builds LIMIT+GTC flatten so leftover shares stay working on the book", () => {
+    const body = buildLimitPlaceOrder({
+      walletAddress: "0xabc",
+      walletId: "w-1",
+      quoteId: "q-1",
+      slippageBps: 50,
+      accountType: "SPOT",
+      priceLimit: 0.4,
+    });
+    expect(body).toMatchObject({
+      timeInForce: "GTC",
+      orderType: "LIMIT",
+      priceLimit: "0.40000000",
+    });
+  });
+
   it("maps only known official status strings", () => {
     expect(mapOfficialOrderStatus("OPEN")).toBe(OrderStatus.SUBMITTED);
     expect(mapOfficialOrderStatus("FILLED")).toBe(OrderStatus.FILLED);
@@ -180,6 +196,90 @@ describe("executeLiveTrade", () => {
     );
     expect(result.status).toBe(OrderStatus.FAILED);
     expect(result.reason).toBe("missing_quote");
+    expect(placeOrder).not.toHaveBeenCalled();
+  });
+
+  it("refuses an ENTER bigger than bankroll × maxPositionPct", async () => {
+    const placeOrder = vi.fn();
+    const result = await executeLiveTrade(
+      request({ requestedNotional: 100, action: "ENTER" }),
+      emptyRiskSnapshot(lim, TradingMode.LIVE),
+      lim,
+      { placeOrder },
+      { walletAddress: "0xabc", walletId: "w-1", accountType: "SPOT" },
+    );
+    expect(result.status).toBe(OrderStatus.FAILED);
+    expect(result.reason).toBe("above_max_position");
+    expect(placeOrder).not.toHaveBeenCalled();
+  });
+
+  it("lets an EXIT flatten the full shares × mark even above the enter cap", async () => {
+    const placeOrder = vi.fn().mockResolvedValue({ orderId: "ord-exit" });
+    const result = await executeLiveTrade(
+      request({ requestedNotional: 100, action: "EXIT", positionSide: "BUY" }),
+      emptyRiskSnapshot(lim, TradingMode.LIVE),
+      lim,
+      { placeOrder },
+      { walletAddress: "0xabc", walletId: "w-1", accountType: "SPOT" },
+    );
+    expect(result.status).toBe(OrderStatus.SUBMITTED);
+    expect(result.placed).toBe(true);
+    expect(result.venueOrderId).toBe("ord-exit");
+    expect(placeOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it("places EXIT as LIMIT GTC labeled EXIT BUY", async () => {
+    const placeOrder = vi.fn().mockResolvedValue({ orderId: "ord-exit-limit" });
+    const result = await executeLiveTrade(
+      request({
+        requestedNotional: 1.84,
+        action: "EXIT",
+        positionSide: "BUY",
+        orderSide: "SELL",
+        orderType: "LIMIT",
+        priceLimit: 0.4,
+        exitIntent: "EXIT BUY",
+      }),
+      emptyRiskSnapshot(lim, TradingMode.LIVE),
+      lim,
+      { placeOrder },
+      { walletAddress: "0xabc", walletId: "w-1", accountType: "SPOT" },
+    );
+    expect(result.placed).toBe(true);
+    expect(result.reason).toBe("EXIT BUY");
+    expect(result.orderType).toBe("LIMIT");
+    expect(placeOrder.mock.calls[0]?.[0]).toMatchObject({
+      orderType: "LIMIT",
+      timeInForce: "GTC",
+      priceLimit: "0.40000000",
+    });
+  });
+
+  it("allows an EXIT leftover under the $1.5 enter min", async () => {
+    const placeOrder = vi.fn().mockResolvedValue({ orderId: "ord-dust" });
+    const result = await executeLiveTrade(
+      request({ requestedNotional: 0.38, action: "EXIT", positionSide: "BUY", orderSide: "SELL" }),
+      emptyRiskSnapshot(lim, TradingMode.LIVE),
+      lim,
+      { placeOrder },
+      { walletAddress: "0xabc", walletId: "w-1", accountType: "SPOT" },
+    );
+    expect(result.status).toBe(OrderStatus.SUBMITTED);
+    expect(result.placed).toBe(true);
+    expect(placeOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it("still blocks an ENTER under the $1.5 venue min", async () => {
+    const placeOrder = vi.fn();
+    const result = await executeLiveTrade(
+      request({ requestedNotional: 0.38, action: "ENTER" }),
+      emptyRiskSnapshot(lim, TradingMode.LIVE),
+      lim,
+      { placeOrder },
+      { walletAddress: "0xabc", walletId: "w-1", accountType: "SPOT" },
+    );
+    expect(result.status).toBe(OrderStatus.FAILED);
+    expect(result.reason).toBe("below_market_min_amount");
     expect(placeOrder).not.toHaveBeenCalled();
   });
 });

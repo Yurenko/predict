@@ -108,6 +108,11 @@ export interface NormalizedTopic {
 
 const PRIMARY_OUTCOME = new Set(["yes", "up"]);
 
+export function outcomeIsDownToken(name: string | null | undefined): boolean {
+  const key = (name ?? "").trim().toLowerCase();
+  return key === "no" || key === "down";
+}
+
 export function pickPrimaryOutcome(outcomes: NormalizedOutcome[]): NormalizedOutcome | null {
   if (outcomes.length === 0) return null;
   return (
@@ -115,6 +120,15 @@ export function pickPrimaryOutcome(outcomes: NormalizedOutcome[]): NormalizedOut
     outcomes[0] ??
     null
   );
+}
+
+/** Down/No token on the same Up-or-Down market. LIVE buys this instead of shorting Up. */
+export function pickComplementOutcome<T extends { tokenId: string; name: string }>(
+  outcomes: T[],
+  primaryTokenId: string,
+): T | null {
+  const others = outcomes.filter((outcome) => outcome.tokenId !== primaryTokenId);
+  return others.find((outcome) => outcomeIsDownToken(outcome.name)) ?? others[0] ?? null;
 }
 
 export function normalizeMarketDetail(detail: MarketDetailInput): NormalizedTopic | null {

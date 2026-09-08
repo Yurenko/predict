@@ -1,4 +1,5 @@
 import type { Strategy, StrategyContext } from "@/lib/types/domain";
+import { outcomeIsDownToken } from "@/lib/normalize/markets";
 import {
   bookReady,
   estimateCosts,
@@ -7,12 +8,9 @@ import {
   timeToExpiryOk,
 } from "@/lib/strategy/common";
 
-export type SpotWindowSide = "up" | "down";
+export { outcomeIsDownToken };
 
-export function outcomeIsDownToken(name: string | null | undefined): boolean {
-  const key = (name ?? "").trim().toLowerCase();
-  return key === "no" || key === "down";
-}
+export type SpotWindowSide = "up" | "down";
 
 /**
  * 5m/15m Up/Down settle on spot vs this window's startPrice (the candle open).

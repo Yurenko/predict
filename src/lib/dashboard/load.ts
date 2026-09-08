@@ -10,15 +10,20 @@ import { withTimeout } from "@/lib/observability/timeout";
 import { collectorsAreFresh, loadCollectorHeartbeats } from "@/lib/observability/health";
 import { assertNoSecrets, redactCredentialMentions } from "@/lib/dashboard/sanitize";
 import { markPrice, unrealizedPnl } from "@/lib/dashboard/mark";
+import { invertBinaryBook } from "@/lib/live/binary";
+import { outcomeIsDownToken } from "@/lib/normalize/markets";
 import { mtmEquity, sumOpenUnrealized } from "@/lib/dashboard/equity";
+import { equityCurveFromClosed } from "@/lib/dashboard/equity-curve";
 import { closedExitPrice } from "@/lib/dashboard/exit-price";
 import { lastExecutableSides } from "@/lib/ingest/orderbook-merge";
-import { marketHeadline, tradableMarketQuery } from "@/lib/markets/horizon";
+import { heldOrTradableMarketQuery, marketHeadline } from "@/lib/markets/horizon";
 import { newerPaperCycle, readPaperCycle, type PaperCycle } from "@/lib/paper/cycle";
-import { DEFAULT_PAPER_ENTRY_MODE, readPaperEntryMode } from "@/lib/paper/entry-mode";
+import { DEFAULT_PAPER_ENTRY_MODE } from "@/lib/paper/entry-mode";
+import { DEFAULT_LIVE_BINARY_MODE } from "@/lib/live/binary-mode";
 import { recordAccount, readRecordControl } from "@/lib/record/control";
 import { isPidAlive } from "@/lib/record/types";
 import { CURRENT_PHASE } from "@/lib/types/domain";
+import { parseClaimState } from "@/lib/live/claim";
 import { LEDGER_PAGE_SIZE, ledgerPageCount, ledgerSkip } from "@/lib/dashboard/pages";
 import type {
   DashboardBacktest,
@@ -43,6 +48,7 @@ const positionInclude = {
     },
   },
   strategy: true,
+  outcome: { select: { name: true } },
   executions: { orderBy: { executedAt: "desc" as const }, take: 8 },
 } as const;
 
@@ -138,7 +144,9 @@ export function emptyDashboard(): DashboardPayload {
     signals: [],
     markets: [],
     strategies: [],
+    equityCurve: [],
     paperEntryMode: DEFAULT_PAPER_ENTRY_MODE,
+    liveBinaryMode: DEFAULT_LIVE_BINARY_MODE,
     backtests: [],
     riskEvents: [],
   };
@@ -152,10 +160,10 @@ function redactPaperCycle(cycle: PaperCycle | null): PaperCycle | null {
   };
 }
 
-function orderReason(raw: unknown): string | null {
-  if (raw && typeof raw === "object" && "reason" in raw) {
-    const reason = (raw as { reason?: unknown }).reason;
-    return typeof reason === "string" ? reason : null;
+function orderPayloadField(raw: unknown, key: "reason" | "intent" | "action"): string | null {
+  if (raw && typeof raw === "object" && key in raw) {
+    const value = (raw as Record<string, unknown>)[key];
+    return typeof value === "string" ? value : null;
   }
   return null;
 }
@@ -182,11 +190,6 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       payload.record.collecting = collectorsAreFresh(payload.collectors);
     } catch {
       payload.collectors = [];
-    }
-    try {
-      payload.paperEntryMode = await readPaperEntryMode();
-    } catch {
-      // keep default
     }
     try {
       const [control, paperCycle] = await Promise.all([readRecordControl(), readPaperCycle()]);
@@ -239,6 +242,7 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       openRows,
       closedCount,
       closedRealizedAgg,
+      closedCurveRows,
       orderCount,
       signalCount,
       markets,
@@ -255,10 +259,16 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
         where: { status: { not: "OPEN" } },
         _sum: { realizedPnl: true },
       }),
+      prisma.position.findMany({
+        where: { status: { not: "OPEN" }, mode: payload.tradingMode },
+        orderBy: { openedAt: "asc" },
+        take: 2_000,
+        select: { closedAt: true, openedAt: true, realizedPnl: true },
+      }),
       prisma.order.count(),
       prisma.signal.count(),
       prisma.market.findMany({
-        ...tradableMarketQuery(),
+        ...heldOrTradableMarketQuery(),
         include: {
           topic: true,
           snapshots: { orderBy: { observedAt: "desc" }, take: 1 },
@@ -292,13 +302,13 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
         orderBy: { createdAt: "desc" },
         skip: ledgerSkip(ordersPage, pageSize),
         take: pageSize,
-        include: { market: true },
+        include: { market: true, outcome: { select: { name: true } } },
       }),
       prisma.signal.findMany({
         orderBy: { timestamp: "desc" },
         skip: ledgerSkip(signalsPage, pageSize),
         take: pageSize,
-        include: { strategy: true, market: true },
+        include: { strategy: true, market: true, outcome: { select: { name: true } } },
       }),
     ]);
 
@@ -338,13 +348,16 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       const snap = lastExecutableSides(row.market.snapshots);
       const hist = snap.lastPrice;
       const open = row.status === "OPEN";
-      const book = open
+      const downToken = outcomeIsDownToken(row.outcome?.name);
+      const rawBook = open
         ? {
             bestBid: live?.bestBid ?? snap.bestBid,
             bestAsk: live?.bestAsk ?? snap.bestAsk,
             lastPrice: hist,
           }
         : { bestBid: null, bestAsk: null, lastPrice: hist };
+      const book =
+        open && downToken && row.side === "BUY" ? invertBinaryBook(rawBook) : rawBook;
       const marked = markPrice(row.side, book);
       const avg = asNumber(row.avgPrice) ?? 0;
       const shares = asNumber(row.shares) ?? 0;
@@ -353,6 +366,7 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
         mode: row.mode,
         status: row.status,
         side: row.side,
+        outcomeName: row.outcome?.name ?? null,
         tokenId: row.tokenId,
         marketId: row.marketId,
         marketTitle: marketHeadline(row.market),
@@ -376,6 +390,7 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
         openedAt: row.openedAt.toISOString(),
         closedAt: iso(row.closedAt),
         endDate: iso(row.market.topic.endDate),
+        claimStatus: open ? null : parseClaimState(row.rawPayload).status,
       };
     });
 
@@ -383,19 +398,31 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
     payload.risk.unrealizedPnl = openMark.pnl;
     payload.risk.openMissingMark = openMark.missingMark;
     payload.risk.mtmEquity = mtmEquity(payload.risk.realizedEquity, openMark.pnl);
+    payload.equityCurve = equityCurveFromClosed({
+      bankroll: payload.limits.bankrollUsdt,
+      now: new Date(),
+      mtmEquity: payload.risk.mtmEquity,
+      closed: closedCurveRows.map((row) => ({
+        at: row.closedAt ?? row.openedAt,
+        pnl: asNumber(row.realizedPnl) ?? 0,
+      })),
+    });
 
     payload.orders = orders.map((row): DashboardOrder => ({
       id: row.id,
       clientOrderId: row.clientOrderId,
       status: row.status,
       side: row.side,
+      outcomeName: row.outcome?.name ?? null,
       tokenId: row.tokenId,
       marketTitle: marketHeadline(row.market),
       marketQuestion: row.market.question,
       requestedAmount: asNumber(row.requestedAmount) ?? 0,
       averagePrice: asNumber(row.averagePrice),
       filledUsdtAmount: asNumber(row.filledUsdtAmount),
-      reason: orderReason(row.rawPayload),
+      reason: orderPayloadField(row.rawPayload, "reason"),
+      intent: orderPayloadField(row.rawPayload, "intent"),
+      action: orderPayloadField(row.rawPayload, "action"),
       submittedAt: iso(row.submittedAt),
     }));
 
@@ -405,6 +432,7 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       marketTitle: marketHeadline(row.market),
       marketQuestion: row.market.question,
       direction: row.direction,
+      outcomeName: row.outcome?.name ?? null,
       netEdge: asNumber(row.netEdge) ?? 0,
       accepted: row.accepted,
       reason: row.reason,

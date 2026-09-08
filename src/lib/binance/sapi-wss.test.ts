@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   PREDICTION_ORDERBOOK_AGGREGATED_TOPIC,
+  buildSapiSignedQuery,
   buildSapiWssUrl,
   parseOrderbookPayload,
   parseSapiEnvelope,
@@ -10,6 +11,27 @@ import {
   sapiSubscribeMessage,
   shouldApplyOrderbookUpdate,
 } from "./sapi-wss";
+
+describe("buildSapiSignedQuery", () => {
+  it("repeats tokenIds keys the way batch-redeem expects", () => {
+    const built = buildSapiSignedQuery({
+      apiSecret: "secret",
+      timestampMs: 1_753_244_327_210,
+      pairs: [
+        ["walletAddress", "0xabc"],
+        ["walletId", "w-1"],
+        ["tokenIds", "aaa"],
+        ["tokenIds", "bbb"],
+        ["chainId", "56"],
+      ],
+    });
+    expect(built.payload).toBe(
+      "chainId=56&timestamp=1753244327210&tokenIds=aaa&tokenIds=bbb&walletAddress=0xabc&walletId=w-1",
+    );
+    expect(built.query).toContain("tokenIds=aaa&tokenIds=bbb");
+    expect(built.query).toContain(`signature=${built.signature}`);
+  });
+});
 
 describe("buildSapiWssUrl", () => {
   it("signs alphabetically sorted query params with HMAC-SHA256", () => {
