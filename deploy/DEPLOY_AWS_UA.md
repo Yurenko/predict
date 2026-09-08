@@ -48,10 +48,12 @@ EC2 → Launch instance:
 | Поле | Значення |
 | --- | --- |
 | Name | botpol |
-| AMI | Ubuntu Server 22.04 LTS |
+| AMI | **Ubuntu Server 26.04 LTS** (x86, Free tier eligible, логін `ubuntu`). Не Pro / SQL / Deep Learning. |
 | Type | **t3.small** (або t3.micro + swap, див. вище) |
 | Key pair | новий `botpol-key`, формат `.pem`, зберегти файл |
 | Storage | 30 GB gp3 |
+
+22.04 теж ок, якщо вже створили 26.04 — **не перестворюйте інстанс**. Далі кроки однакові.
 
 Security group:
 
@@ -83,41 +85,58 @@ ssh -i "$env:USERPROFILE\.ssh\botpol-key.pem" ubuntu@ВАШ_PUBLIC_IP
 
 Перший раз: `yes` → Enter.
 
-## 4. Swap + пакети (на EC2)
+## 4. Swap + пакети (на EC2, Ubuntu 26.04)
+
+Якщо `sudo apt update && sudo apt upgrade -y` уже йде або щойно закінчився — **не повторюйте**, одразу swap і пакети нижче.
 
 ```bash
 sudo fallocate -l 2G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+grep -q swapfile /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y git postgresql redis-server curl
+sudo apt install -y git postgresql redis-server curl ca-certificates gnupg
 ```
 
-Node 22:
+Node **22** (проєкт зібраний під нього; не ставте окремо `npm` з Ubuntu — конфлікт з NodeSource):
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
-node -v   # v22.x
+node -v   # має бути v22.x
+npm -v
 ```
 
-Postgres (пароль поставте свій, не лишайте `botpol` у проді):
+Якщо NodeSource впаде на новому кодовому імені 26.04:
+
+```bash
+sudo apt install -y nodejs
+node -v   # на 26.04 з репо Ubuntu теж часто 22.x — підійде, якщо >= 22
+```
+
+Postgres (пароль свій, не `botpol` у проді). На 26.04 Postgres ≥15, тому ще `GRANT` на schema `public`:
 
 ```bash
 sudo -u postgres psql -c "CREATE USER botpol WITH PASSWORD 'СИЛЬНИЙ_ПАРОЛЬ';"
 sudo -u postgres psql -c "CREATE DATABASE botpol OWNER botpol;"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE botpol TO botpol;"
+sudo -u postgres psql -d botpol -c "GRANT ALL ON SCHEMA public TO botpol;"
+sudo -u postgres psql -d botpol -c "ALTER SCHEMA public OWNER TO botpol;"
 ```
 
-Redis лише localhost + запис на диск (щоб Старт пережив ребут):
+Redis лише localhost + AOF на диск (щоб Старт пережив ребут):
 
 ```bash
 sudo sed -i 's/^#\?appendonly no/appendonly yes/' /etc/redis/redis.conf
 sudo systemctl enable --now postgresql redis-server
 sudo systemctl restart redis-server
+```
+
+Якщо `postgresql.service` не знайдено:
+
+```bash
+systemctl list-units --type=service | grep -i postgres
+# увімкніть те, що є, напр. postgresql@16-main
 ```
 
 Перевірка: `sudo ss -lptn | grep -E '5432|6379'` — має слухати `127.0.0.1`, не `0.0.0.0`.
