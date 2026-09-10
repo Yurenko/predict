@@ -134,7 +134,16 @@ async function fillSubmittedPaperOrders(options: {
   limits: RiskLimits;
 }): Promise<{ filled: number; riskState: RiskSnapshot }> {
   const submitted = await prisma.order.findMany({
-    where: { mode: TradingMode.PAPER, status: { in: [OrderStatus.SUBMITTED, OrderStatus.PENDING] } },
+    where: {
+      mode: TradingMode.PAPER,
+      status: {
+        in: [
+          OrderStatus.SUBMITTED,
+          OrderStatus.PENDING,
+          OrderStatus.PARTIALLY_FILLED,
+        ],
+      },
+    },
     include: {
       signal: { include: { strategy: true } },
       market: {
@@ -201,11 +210,27 @@ async function fillSubmittedPaperOrders(options: {
               },
             })
           : null);
+    // For an EXIT, PAPER mirrors LIVE flattening: the order represents the
+    // whole position, but each fill only acts on the shares still remaining.
+    const remainingExitShares =
+      action === "EXIT" && position ? Math.max(0, Number(position.shares)) : null;
+    const exitQuotePrice =
+      remainingExitShares != null
+        ? bestBid ?? lastPrice ?? (position ? Number(position.avgPrice) : null)
+        : null;
+    const remainingExitNotional =
+      remainingExitShares != null && exitQuotePrice != null && exitQuotePrice > 0
+        ? remainingExitShares * exitQuotePrice
+        : null;
+
     const quote: PaperQuote | null = await fetchOfficialPaperQuote({
       tokenId: order.tokenId,
       side: order.side,
-      amountUsdt: asNumber(order.requestedAmount) ?? 0,
-      amountShares: action === "EXIT" && position ? Number(position.shares) : undefined,
+      amountUsdt:
+        action === "EXIT" && remainingExitNotional != null
+          ? remainingExitNotional
+          : asNumber(order.requestedAmount) ?? 0,
+      amountShares: remainingExitShares ?? undefined,
       slippageBps: options.limits.maxSlippageBps,
     });
     const signal: StrategySignal = order.signal
@@ -252,7 +277,14 @@ async function fillSubmittedPaperOrders(options: {
       book,
       quote,
       now: options.now,
-      requestedNotional: asNumber(order.requestedAmount) ?? 0,
+      // ENTER keeps the original bankroll ticket. EXIT is resized to the
+      // actual remaining shares so a partial fill never tries to sell shares
+      // that were already closed. The DB order keeps requestedAmount as the
+      // original total for cumulative fillPercentage/accounting.
+      requestedNotional:
+        action === "EXIT" && remainingExitNotional != null
+          ? remainingExitNotional
+          : asNumber(order.requestedAmount) ?? 0,
       maxPriceImpact: options.limits.maxPriceImpact,
       positionSide: position?.side,
       positionId: position?.id ?? positionId ?? undefined,
@@ -266,35 +298,28 @@ async function fillSubmittedPaperOrders(options: {
     const saved = await persistPaperTrade({ request, result, signal });
     if (result.fill && (result.status === "FILLED" || result.status === "PARTIALLY_FILLED")) {
       filled += 1;
-      if (action === "ENTER") {
-        riskState = {
-          ...riskState,
-          openPositions: riskState.openPositions + 1,
-          openNotional: riskState.openNotional + result.fill.notional,
-        };
-      } else if (action === "EXIT" && position) {
-        const pnl =
-          saved?.realizedPnl ??
-          paperExitPnl(
-            {
-              side: position.side,
-              avgPrice: Number(position.avgPrice),
-              shares: Number(position.shares),
-            },
-            result.fill,
-          );
-        const closed = recordClosedTrade(riskState, pnl, options.now, options.limits);
+      // Recompute reservations from the database. A partial fill is one
+      // position, not a new position on every retry.
+      riskState = {
+        ...riskState,
+        openPositions: await reservedPaperSlots(),
+      };
+      if (action === "EXIT" && saved?.realizedPnl != null && result.status === "FILLED") {
+        const closed = recordClosedTrade(
+          riskState,
+          saved.realizedPnl,
+          options.now,
+          options.limits,
+        );
         riskState = {
           ...closed.state,
-          openPositions: Math.max(0, riskState.openPositions - 1),
-          openNotional: Math.max(
-            0,
-            riskState.openNotional - Number(position.shares) * Number(position.avgPrice),
-          ),
+          openPositions: await reservedPaperSlots(),
         };
         await persistRiskSnapshot(riskState);
       }
-      if (action === "ENTER") await clearPendingFlip(order.signal?.strategyId ?? "", order.marketId);
+      if (action === "ENTER") {
+        await clearPendingFlip(order.signal?.strategyId ?? "", order.marketId);
+      }
     }
     log.info(
       {

@@ -1,0 +1,20 @@
+[Unit]
+Description=predict dashboard (paper collect + trade after Start)
+After=network.target postgresql.service redis-server.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/predict
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=0.0.0.0
+EnvironmentFile=/home/ubuntu/predict/.env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+WatchdogSec=0
+
+[Install]
+WantedBy=multi-user.target

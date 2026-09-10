@@ -20,7 +20,7 @@ Terraform у `infra/aws` (ECS, ALB, RDS) **не запускайте** — це 
 Ваш ПК (Windows) ──SSH──▶ EC2 Ubuntu (eu-central-1)
                               ├─ systemd postgresql
                               ├─ systemd redis-server   (appendonly)
-                              └─ systemd botpol-web     → npm start :3000
+                              └─ systemd predict-web    → npm start :3000
                                     └─ після Старт: collect + paper у цьому ж процесі
 ```
 
@@ -50,7 +50,7 @@ EC2 → Launch instance:
 | Name | botpol |
 | AMI | **Ubuntu Server 26.04 LTS** (x86, Free tier eligible, логін `ubuntu`). Не Pro / SQL / Deep Learning. |
 | Type | **t3.small** (або t3.micro + swap, див. вище) |
-| Key pair | новий `botpol-key`, формат `.pem`, зберегти файл |
+| Key pair | новий `predict-key`, формат `.pem`, зберегти файл |
 | Storage | 30 GB gp3 |
 
 22.04 теж ок, якщо вже створили 26.04 — **не перестворюйте інстанс**. Далі кроки однакові.
@@ -75,12 +75,12 @@ Security group:
 Покладіть `.pem` у `%USERPROFILE%\.ssh\` і обмежте права:
 
 ```powershell
-icacls "$env:USERPROFILE\.ssh\botpol-key.pem" /inheritance:r
-icacls "$env:USERPROFILE\.ssh\botpol-key.pem" /grant:r "$($env:USERNAME):(R)"
+icacls "$env:USERPROFILE\.ssh\predict-key.pem" /inheritance:r
+icacls "$env:USERPROFILE\.ssh\predict-key.pem" /grant:r "$($env:USERNAME):(R)"
 ```
 
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\botpol-key.pem" ubuntu@ВАШ_PUBLIC_IP
+ssh -i "$env:USERPROFILE\.ssh\predict-key.pem" ubuntu@ВАШ_PUBLIC_IP
 ```
 
 Перший раз: `yes` → Enter.
@@ -172,7 +172,7 @@ cd predict
 **Варіант C — scp з Windows** (якщо git ще не запушений):
 
 ```powershell
-scp -i "$env:USERPROFILE\.ssh\botpol-key.pem" -r "E:\My projects\predict" ubuntu@ВАШ_IP:~/predict
+scp -i "$env:USERPROFILE\.ssh\predict-key.pem" -r "E:\My projects\predict" ubuntu@ВАШ_IP:~/predict
 ```
 
 На сервері **не** копіюйте `node_modules`, `.next`, `.env`. Якщо тягнете scp усього дерева — на EC2: `rm -rf node_modules .next`.
@@ -235,14 +235,14 @@ PORT=3000 npm start
 Один сервіс — дашборд. Старт/Стоп лишаються кнопками в UI.
 
 ```bash
-sudo cp ~/predict/deploy/systemd/botpol-web.service /etc/systemd/system/
-sudo nano /etc/systemd/system/botpol-web.service   # шлях, якщо не /home/ubuntu/predict
+sudo cp ~/predict/deploy/systemd/predict-web.service /etc/systemd/system/
+# якщо цього файлу ще немає в клоні — скопіюйте botpol-web.service під імʼям predict-web.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now botpol-web
-sudo systemctl status botpol-web
+sudo systemctl enable --now predict-web
+sudo systemctl status predict-web
 ```
 
-Має бути `active (running)`. Логи: `journalctl -u botpol-web -f`.
+Має бути `active (running)`. Логи: `journalctl -u predict-web -f`.
 
 У браузері з вашого IP: `http://ВАШ_IP:3000` → стратегії → **Старт**.
 
@@ -267,7 +267,7 @@ GIT_SSH_COMMAND='ssh -i ~/.ssh/botpol_deploy -o IdentitiesOnly=yes' git pull
 npm ci
 npx prisma migrate deploy
 npm run build
-sudo systemctl restart botpol-web
+sudo systemctl restart predict-web
 ```
 
 Після рестарту перевірте `/api/health` і що в UI знову **Старт** (або цикл уже running).
@@ -282,18 +282,18 @@ sudo systemctl restart botpol-web
 | Permission denied (publickey) | той самий `.pem`, користувач `ubuntu` |
 | Binance 451 | регіон не США |
 | `Invalid API-key, IP` | Elastic IP у whitelist ключа + Prediction SAS |
-| Дашборд не відкривається | порт 3000 = My IP, `systemctl status botpol-web` |
+| Дашборд не відкривається | порт 3000 = My IP, `systemctl status predict-web` |
 | Подвійні угоди | не запущений другий paper/collector |
 | OOM / процес зник | `dmesg \| tail`, swap, апгрейд на t3.small |
-| Порожні ринки | Старт натиснутий, логи collector у `journalctl -u botpol-web` |
-| Бот мовчить після reboot | `systemctl is-enabled botpol-web`, потім Старт |
+| Порожні ринки | Старт натиснутий, логи collector у `journalctl -u predict-web` |
+| Бот мовчить після reboot | `systemctl is-enabled predict-web`, потім Старт |
 
 ## Бекап (пізніше)
 
 Поки диск EC2. Коли з’явиться PnL, який шкода втратити:
 
 ```bash
-sudo -u postgres pg_dump botpol | gzip > ~/botpol-$(date +%F).sql.gz
+sudo -u postgres pg_dump predict | gzip > ~/predict-$(date +%F).sql.gz
 ```
 
 S3 можна додати окремо; для старту не потрібно.

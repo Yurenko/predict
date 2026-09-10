@@ -38,7 +38,14 @@ export async function persistPaperTrade(options: {
       where: { idempotencyKey: options.result.idempotencyKey },
       include: { executions: true },
     });
-    if (existing && existing.executions.length > 0) {
+    // A PAPER PARTIALLY_FILLED order can receive additional fills. Do not
+    // treat the first execution as the end of the order lifecycle.
+    if (
+      existing &&
+      [OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.FAILED, OrderStatus.EXPIRED].includes(
+        existing.status,
+      )
+    ) {
       return { realizedPnl: null };
     }
 
@@ -72,8 +79,8 @@ export async function persistPaperTrade(options: {
       quoteRowId = savedQuote.id;
     }
 
-    let signalId: string | undefined;
-    if (strategy) {
+    let signalId: string | undefined = existing?.signalId ?? undefined;
+    if (strategy && !signalId) {
       const saved = await prisma.signal.create({
         data: {
           strategyId: strategy.id,
@@ -109,13 +116,30 @@ export async function persistPaperTrade(options: {
             quoteId: quoteRowId ?? existing.quoteId,
             signalId: signalId ?? existing.signalId,
             venueOrderId: options.result.venueOrderId ?? existing.venueOrderId,
-            filledUsdtAmount: fill?.notional ?? existing.filledUsdtAmount,
-            filledShareQty: fill?.shares ?? existing.filledShareQty,
+            filledUsdtAmount: fill
+              ? Number(existing.filledUsdtAmount ?? 0) + fill.notional
+              : existing.filledUsdtAmount,
+            filledShareQty: fill
+              ? Number(existing.filledShareQty ?? 0) + fill.shares
+              : existing.filledShareQty,
+            fillPercentage: fill
+              ? Math.min(
+                  1,
+                  (Number(existing.filledUsdtAmount ?? 0) + fill.notional) /
+                    Math.max(Number(existing.requestedAmount), 1e-12),
+                )
+              : existing.fillPercentage,
             averagePrice: fill?.price ?? existing.averagePrice,
-            marketProviderFee: fill?.fee ?? existing.marketProviderFee,
+            marketProviderFee: fill
+              ? Number(existing.marketProviderFee ?? 0) + fill.fee
+              : existing.marketProviderFee,
+            networkFee: fill
+              ? Number(existing.networkFee ?? 0) + fill.networkCost
+              : existing.networkFee,
             terminalAt:
               options.result.status === OrderStatus.PENDING ||
-              options.result.status === OrderStatus.SUBMITTED
+              options.result.status === OrderStatus.SUBMITTED ||
+              options.result.status === OrderStatus.PARTIALLY_FILLED
                 ? null
                 : options.request.now,
             rawPayload: {
@@ -211,41 +235,70 @@ export async function persistPaperTrade(options: {
     let positionId = open?.id;
     let realizedPnl: number | null = null;
 
-    if (options.request.action === "ENTER" && !open) {
-      const created = await prisma.position.create({
-        data: {
-          mode: options.request.mode,
-          strategyId: strategy?.id,
-          marketId: market.id,
-          outcomeId: options.request.outcomeId,
-          signalId,
-          tokenId: options.request.tokenId,
-          side: options.result.side,
-          status: PositionStatus.OPEN,
-          shares: fill.shares,
-          avgPrice: fill.price,
-          totalCost: fill.notional + fill.fee + fill.slippage + fill.priceImpact,
-          feesPaid: fill.fee,
-          slippagePaid: fill.slippage,
-          priceImpactPaid: fill.priceImpact,
-        },
-      });
-      positionId = created.id;
+    if (options.request.action === "ENTER") {
+      if (!open) {
+        const created = await prisma.position.create({
+          data: {
+            mode: options.request.mode,
+            strategyId: strategy?.id,
+            marketId: market.id,
+            outcomeId: options.request.outcomeId,
+            signalId,
+            tokenId: options.request.tokenId,
+            side: options.result.side,
+            status: PositionStatus.OPEN,
+            shares: fill.shares,
+            avgPrice: fill.price,
+            totalCost: fill.notional + fill.fee + fill.slippage + fill.priceImpact,
+            feesPaid: fill.fee,
+            slippagePaid: fill.slippage,
+            priceImpactPaid: fill.priceImpact,
+            networkCostPaid: fill.networkCost,
+          },
+        });
+        positionId = created.id;
+      } else {
+        const oldShares = Number(open.shares);
+        const newShares = oldShares + fill.shares;
+        const newAvg =
+          newShares > 0
+            ? (Number(open.avgPrice) * oldShares + fill.price * fill.shares) / newShares
+            : fill.price;
+        await prisma.position.update({
+          where: { id: open.id },
+          data: {
+            shares: newShares,
+            avgPrice: newAvg,
+            totalCost: Number(open.totalCost) + fill.notional + fill.fee + fill.slippage + fill.priceImpact,
+            feesPaid: { increment: fill.fee },
+            slippagePaid: { increment: fill.slippage },
+            priceImpactPaid: { increment: fill.priceImpact },
+            networkCostPaid: { increment: fill.networkCost },
+          },
+        });
+      }
     } else if (options.request.action === "EXIT" && open) {
+      const openShares = Number(open.shares);
+      const closeShares = Math.min(fill.shares, openShares);
       realizedPnl = paperExitPnl(
         {
           side: open.side,
           avgPrice: Number(open.avgPrice),
-          shares: Number(open.shares),
+          shares: openShares,
         },
-        fill,
+        { ...fill, shares: closeShares },
       );
+      const remaining = Math.max(0, openShares - closeShares);
+      const fraction = openShares > 0 ? remaining / openShares : 0;
+      const nextStatus = remaining <= 1e-8 ? PositionStatus.CLOSED : PositionStatus.OPEN;
       await prisma.position.update({
         where: { id: open.id },
         data: {
-          status: PositionStatus.CLOSED,
-          closedAt: options.request.now,
-          realizedPnl,
+          status: nextStatus,
+          closedAt: nextStatus === PositionStatus.CLOSED ? options.request.now : null,
+          shares: remaining,
+          totalCost: Number(open.totalCost) * fraction,
+          realizedPnl: { increment: realizedPnl },
           feesPaid: { increment: fill.fee },
           slippagePaid: { increment: fill.slippage },
           priceImpactPaid: { increment: fill.priceImpact },
@@ -254,7 +307,9 @@ export async function persistPaperTrade(options: {
             ...(open.rawPayload && typeof open.rawPayload === "object"
               ? (open.rawPayload as Record<string, unknown>)
               : {}),
-            closePrice: fill.price,
+            ...(nextStatus === PositionStatus.CLOSED
+              ? { closePrice: fill.price }
+              : { partialClosePrice: fill.price }),
             ...(options.result.reason === "expired" ? { expired: true, settled: true } : {}),
           } as Prisma.InputJsonValue,
         },

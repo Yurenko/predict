@@ -9,7 +9,8 @@ export function mapOfficialOrderStatus(raw: string | undefined | null): OrderSta
   if (!raw) return null;
   const key = raw.trim().toUpperCase();
   if (key === "OPEN") return OrderStatus.SUBMITTED;
-  if (key === "FULFILLED") return OrderStatus.FILLED;
+  if (key === "FULFILLED" || key === "COMPLETED" || key === "FILLED") return OrderStatus.FILLED;
+  if (key === "CANCELLED" || key === "CANCELED" || key === "CANCELLED_BY_USER") return OrderStatus.CANCELLED;
   if ((Object.values(OrderStatus) as string[]).includes(key)) {
     return key as OrderStatus;
   }

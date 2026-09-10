@@ -31,9 +31,22 @@ function fillFromOfficial(row: OfficialOrder) {
   const price = asNumber(row.price);
   const fillPct = asNumber(row.fillPercentage);
   let status = mapOfficialOrderStatus(row.status);
-  if (!status && fillPct !== null && fillPct >= 1 && (shares ?? 0) > 0) {
+  // Prefer the quantitative fill progress when it contradicts a generic
+  // "OPEN"/"SUBMITTED" status. The venue's cumulative filled quantities are
+  // the safest indicator of whether an execution actually happened.
+  if (fillPct !== null && fillPct >= 1 && (shares ?? 0) > 0) {
     status = OrderStatus.FILLED;
-  } else if (!status && fillPct !== null && fillPct > 0 && fillPct < 1) {
+  } else if (
+    fillPct !== null &&
+    fillPct > 0 &&
+    fillPct < 1
+  ) {
+    status = OrderStatus.PARTIALLY_FILLED;
+  } else if (
+    status === OrderStatus.SUBMITTED &&
+    (shares ?? 0) > 0 &&
+    fillPct === null
+  ) {
     status = OrderStatus.PARTIALLY_FILLED;
   }
   return {
@@ -80,135 +93,292 @@ function jsonPayload(
   return { ...base, ...extra } as Prisma.InputJsonValue;
 }
 
+
+/**
+ * Binance reports cumulative fill quantities. Never persist the cumulative
+ * number as a new Execution on every poll: apply only the delta since the
+ * last checkpoint stored on Order.
+ *
+ * This is the critical invariant for LIVE:
+ *   venue filled = 100
+ *   DB already applied = 40
+ *   next execution = 60, not another 100.
+ */
 export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolean> {
   if (!row.orderId) return false;
-  const order = await prisma.order.findFirst({
-    where: { mode: TradingMode.LIVE, venueOrderId: row.orderId },
-    include: {
-      executions: true,
-      position: true,
-      signal: { select: { strategyId: true } },
-    },
-  });
-  if (!order) return false;
 
-  const parsed = fillFromOfficial(row);
-  const nextStatus = parsed.status ?? order.status;
-  const fill = completeOfficialFill(parsed);
+  return prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({
+      where: { mode: TradingMode.LIVE, venueOrderId: row.orderId },
+      include: {
+        executions: { orderBy: { executedAt: "desc" } },
+        position: true,
+        signal: { select: { strategyId: true } },
+      },
+    });
+    if (!order) return false;
 
-  await prisma.order.update({
-    where: { id: order.id },
-    data: {
-      status: nextStatus,
-      vendorOrderId: row.vendorOrderId ?? order.vendorOrderId,
-      filledUsdtAmount: fill?.notional ?? parsed.notional ?? order.filledUsdtAmount,
-      filledShareQty: fill?.shares ?? parsed.shares ?? order.filledShareQty,
-      fillPercentage: parsed.fillPct ?? order.fillPercentage,
-      averagePrice: fill?.price ?? parsed.price ?? order.averagePrice,
-      marketProviderFee: parsed.fee || order.marketProviderFee,
-      networkFee: parsed.network || order.networkFee,
-      terminalAt:
-        nextStatus === OrderStatus.SUBMITTED || nextStatus === OrderStatus.PENDING
-          ? order.terminalAt
-          : new Date(),
-      rawPayload: jsonPayload(order.rawPayload, {
-        officialStatus: row.status ?? null,
-        orderId: row.orderId,
-      }),
-    },
-  });
+    const parsed = fillFromOfficial(row);
+    const nextStatus = parsed.status ?? order.status;
 
-  if (!fill || order.executions.length > 0) {
+    const previousShares = Number(order.filledShareQty ?? 0);
+    const previousNotional = Number(order.filledUsdtAmount ?? 0);
+    const previousFee = Number(order.marketProviderFee ?? 0);
+    const previousNetwork = Number(order.networkFee ?? 0);
+
+    const cumulativeShares = parsed.shares ?? previousShares;
+    const cumulativeNotional = parsed.notional ?? previousNotional;
+    const cumulativeFee = parsed.fee;
+    const cumulativeNetwork = parsed.network;
+
+    // Venue values are cumulative. Clamp negative deltas so a stale/out-of-order
+    // response can never manufacture a negative execution.
+    let deltaShares = Math.max(0, cumulativeShares - previousShares);
+    let deltaNotional = Math.max(0, cumulativeNotional - previousNotional);
+    let deltaFee = Math.max(0, cumulativeFee - previousFee);
+    let deltaNetwork = Math.max(0, cumulativeNetwork - previousNetwork);
+
+    const price = parsed.price ?? (
+      deltaShares > 0 && deltaNotional > 0 ? deltaNotional / deltaShares : null
+    );
+
+    if (deltaShares > 0 && deltaNotional <= 0 && price && price > 0) {
+      deltaNotional = deltaShares * price;
+    }
+    if (deltaNotional > 0 && deltaShares <= 0 && price && price > 0) {
+      deltaShares = deltaNotional / price;
+    }
+
+    const fill =
+      price && deltaShares > 0 && deltaNotional > 0
+        ? completeOfficialFill({
+            status: nextStatus,
+            shares: deltaShares,
+            notional: deltaNotional,
+            price,
+            fee: deltaFee,
+            network: deltaNetwork,
+            // A delta is partial only when the venue order is still partial.
+            fillPct: nextStatus === OrderStatus.PARTIALLY_FILLED ? 0.5 : 1,
+          })
+        : null;
+
+    await tx.order.update({
+      where: { id: order.id },
+      data: {
+        status: nextStatus,
+        vendorOrderId: row.vendorOrderId ?? order.vendorOrderId,
+        // Keep these fields as cumulative venue checkpoints.
+        filledUsdtAmount:
+          parsed.notional != null ? parsed.notional : order.filledUsdtAmount,
+        filledShareQty:
+          parsed.shares != null ? parsed.shares : order.filledShareQty,
+        fillPercentage: parsed.fillPct ?? order.fillPercentage,
+        averagePrice: parsed.price ?? order.averagePrice,
+        marketProviderFee:
+          parsed.fee > 0 ? parsed.fee : order.marketProviderFee,
+        networkFee:
+          parsed.network > 0 ? parsed.network : order.networkFee,
+        terminalAt:
+          nextStatus === OrderStatus.SUBMITTED ||
+          nextStatus === OrderStatus.PENDING ||
+          nextStatus === OrderStatus.PARTIALLY_FILLED
+            ? null
+            : order.terminalAt ?? new Date(),
+        rawPayload: jsonPayload(order.rawPayload, {
+          officialStatus: row.status ?? null,
+          orderId: row.orderId,
+          reconciledAt: new Date().toISOString(),
+          cumulativeFilledShares: cumulativeShares,
+          cumulativeFilledNotional: cumulativeNotional,
+          appliedDeltaShares: deltaShares,
+          appliedDeltaNotional: deltaNotional,
+          appliedDeltaFee: deltaFee,
+          appliedDeltaNetwork: deltaNetwork,
+        }),
+      },
+    });
+
+    // No new venue fill since the last poll. The order status may still have
+    // changed (e.g. PARTIALLY_FILLED -> FILLED), which is enough to return.
+    if (!fill) return true;
+
+    let open = order.position?.status === PositionStatus.OPEN ? order.position : null;
+    if (!open) {
+      open = await tx.position.findFirst({
+        where: {
+          mode: TradingMode.LIVE,
+          status: PositionStatus.OPEN,
+          marketId: order.marketId,
+          tokenId: order.tokenId,
+        },
+        orderBy: { openedAt: "desc" },
+      });
+    }
+
+    const strategyId = open?.strategyId ?? order.signal?.strategyId ?? undefined;
+
+    // A SELL without a known local position is an accounting anomaly. Never
+    // create a synthetic OPEN SELL position: that would make the local DB
+    // contradict the real Binance account. Persist the execution and let the
+    // venue-position sync repair/overlay the local state.
+    if (!open && order.side !== "BUY") {
+      await tx.execution.create({
+        data: {
+          mode: TradingMode.LIVE,
+          orderId: order.id,
+          positionId: null,
+          executedAt: new Date(),
+          price: fill.price,
+          shares: fill.shares,
+          usdtAmount: fill.notional,
+          isPartial: fill.partial,
+          rawPayload: {
+            orderId: row.orderId,
+            status: row.status ?? null,
+            orphanExit: true,
+          },
+        },
+      });
+      inc("live.reconcile_orphan_exit");
+      log.error(
+        {
+          orderId: row.orderId,
+          marketId: order.marketId,
+          tokenId: order.tokenId,
+          shares: fill.shares,
+        },
+        "LIVE SELL fill has no local OPEN position; execution recorded without synthetic position",
+      );
+      return true;
+    }
+
+    const applied = applyLiveFillToPosition(
+      open ? snapshotFromRow(open) : null,
+      fill,
+      order.side,
+    );
+    const now = new Date();
+
+    let positionId = open?.id ?? null;
+    if (!open) {
+      const created = await tx.position.create({
+        data: {
+          mode: TradingMode.LIVE,
+          strategyId,
+          marketId: order.marketId,
+          outcomeId: order.outcomeId,
+          tokenId: order.tokenId,
+          side: applied.position.side,
+          status: PositionStatus.OPEN,
+          shares: applied.position.shares,
+          avgPrice: applied.position.avgPrice,
+          totalCost: applied.position.totalCost,
+          feesPaid: applied.position.feesPaid,
+          networkCostPaid: applied.position.networkCostPaid,
+          rawPayload: {
+            source: "live-reconciliation",
+            venueOrderId: order.venueOrderId,
+          },
+        },
+      });
+      positionId = created.id;
+    } else {
+      await tx.position.update({
+        where: { id: open.id },
+        data: {
+          strategyId: open.strategyId ?? strategyId,
+          status:
+            applied.status === "CLOSED"
+              ? PositionStatus.CLOSED
+              : PositionStatus.OPEN,
+          closedAt:
+            applied.status === "CLOSED" ? now : open.closedAt,
+          shares: applied.position.shares,
+          avgPrice: applied.position.avgPrice,
+          totalCost: applied.position.totalCost,
+          realizedPnl: applied.position.realizedPnl,
+          feesPaid: applied.position.feesPaid,
+          networkCostPaid: applied.position.networkCostPaid,
+          rawPayload:
+            applied.closePrice !== null || open.side !== order.side
+              ? jsonPayload(
+                  applied.status === "CLOSED"
+                    ? clearLiveFlatten(open.rawPayload)
+                    : open.rawPayload,
+                  {
+                    ...(applied.closePrice !== null
+                      ? { closePrice: applied.closePrice }
+                      : {}),
+                    ...(open.side !== order.side &&
+                    applied.status !== "CLOSED"
+                      ? { liveFlatten: true }
+                      : {}),
+                  },
+                )
+              : undefined,
+        },
+      });
+    }
+
+    await tx.execution.create({
+      data: {
+        mode: TradingMode.LIVE,
+        orderId: order.id,
+        positionId,
+        executedAt: now,
+        price: fill.price,
+        shares: fill.shares,
+        usdtAmount: fill.notional,
+        isPartial:
+          fill.partial ||
+          (applied.status === "OPEN" &&
+            open != null &&
+            open.side !== order.side),
+        rawPayload: {
+          orderId: row.orderId,
+          status: row.status ?? null,
+          cumulativeFilledShares: cumulativeShares,
+          cumulativeFilledNotional: cumulativeNotional,
+        },
+      },
+    });
+
+    if (positionId) {
+      await tx.order.update({
+        where: { id: order.id },
+        data: { positionId },
+      });
+    }
+
+    if (deltaFee > 0) {
+      await tx.fee.create({
+        data: {
+          orderId: order.id,
+          positionId,
+          kind: "market_provider",
+          amount: deltaFee,
+          currency: "USDT",
+          observedAt: now,
+        },
+      });
+    }
+    if (deltaNetwork > 0) {
+      await tx.fee.create({
+        data: {
+          orderId: order.id,
+          positionId,
+          kind: "network",
+          amount: deltaNetwork,
+          currency: "USDT",
+          observedAt: now,
+        },
+      });
+    }
+
+    inc("live.reconcile_fill");
     return true;
-  }
-
-  const linkedOpen =
-    order.position && order.position.status === PositionStatus.OPEN ? order.position : null;
-  const open =
-    linkedOpen ??
-    (await prisma.position.findFirst({
-      where: {
-        mode: TradingMode.LIVE,
-        status: PositionStatus.OPEN,
-        marketId: order.marketId,
-        tokenId: order.tokenId,
-      },
-    }));
-
-  const applied = applyLiveFillToPosition(open ? snapshotFromRow(open) : null, fill, order.side);
-  const strategyId = open?.strategyId ?? order.signal?.strategyId ?? undefined;
-  const now = new Date();
-
-  let positionId = open?.id ?? applied.position.id;
-  if (!open) {
-    const created = await prisma.position.create({
-      data: {
-        mode: TradingMode.LIVE,
-        strategyId,
-        marketId: order.marketId,
-        outcomeId: order.outcomeId,
-        tokenId: order.tokenId,
-        side: applied.position.side,
-        status: PositionStatus.OPEN,
-        shares: applied.position.shares,
-        avgPrice: applied.position.avgPrice,
-        totalCost: applied.position.totalCost,
-        feesPaid: applied.position.feesPaid,
-        networkCostPaid: applied.position.networkCostPaid,
-      },
-    });
-    positionId = created.id;
-  } else {
-    await prisma.position.update({
-      where: { id: open.id },
-      data: {
-        strategyId: open.strategyId ?? strategyId,
-        status: applied.status === "CLOSED" ? PositionStatus.CLOSED : PositionStatus.OPEN,
-        closedAt: applied.status === "CLOSED" ? now : open.closedAt,
-        shares: applied.position.shares,
-        avgPrice: applied.position.avgPrice,
-        totalCost: applied.position.totalCost,
-        realizedPnl: applied.position.realizedPnl,
-        feesPaid: applied.position.feesPaid,
-        networkCostPaid: applied.position.networkCostPaid,
-        rawPayload:
-          applied.closePrice !== null || open.side !== order.side
-            ? jsonPayload(
-                applied.status === "CLOSED" ? clearLiveFlatten(open.rawPayload) : open.rawPayload,
-                {
-                  ...(applied.closePrice !== null ? { closePrice: applied.closePrice } : {}),
-                  ...(open.side !== order.side && applied.status !== "CLOSED"
-                    ? { liveFlatten: true }
-                    : {}),
-                },
-              )
-            : undefined,
-      },
-    });
-    positionId = open.id;
-  }
-
-  await prisma.execution.create({
-    data: {
-      mode: TradingMode.LIVE,
-      orderId: order.id,
-      positionId,
-      executedAt: now,
-      price: fill.price,
-      shares: fill.shares,
-      usdtAmount: fill.notional,
-      isPartial:
-        fill.partial || (applied.status === "OPEN" && open != null && open.side !== order.side),
-      rawPayload: { orderId: row.orderId, status: row.status ?? null },
-    },
   });
-
-  if (positionId) {
-    await prisma.order.update({ where: { id: order.id }, data: { positionId } });
-  }
-
-  inc("live.reconcile_fill");
-  return true;
 }
 
 export async function reconcileLiveOrders(options: {

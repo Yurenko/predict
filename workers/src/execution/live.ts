@@ -197,11 +197,15 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
   submitted: number;
   open: number;
 }> {
+  // LIVE never trades from a stale local snapshot after an account-sync
+  // failure. Binance is the source of truth for real inventory.
+  let accountStateHealthy = true;
   try {
     const applied = await syncLiveOrdersFromVenue(venue, ctx.walletAddress);
     if (applied > 0) log.info({ applied }, "live reconcile before cycle");
   } catch (error) {
-    log.warn({ err: String(error) }, "live reconcile before cycle skipped");
+    accountStateHealthy = false;
+    log.error({ err: String(error) }, "live reconcile before cycle FAILED");
   }
 
   const limits = limitsFromEnv();
@@ -225,8 +229,22 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
     const venueSync = await syncLivePositionsFromVenue(venue, ctx, { claim: false });
     log.info(venueSync, "live venue position sync");
   } catch (error) {
-    log.warn({ err: String(error) }, "live venue position sync skipped");
+    accountStateHealthy = false;
+    log.error({ err: String(error) }, "live venue position sync FAILED");
   }
+
+  if (!accountStateHealthy) {
+    log.error(
+      "LIVE trading cycle aborted: Binance order/position state could not be verified",
+    );
+    return {
+      enabled: 0,
+      considered: 0,
+      submitted: 0,
+      open: await countOpenLivePositions(),
+    };
+  }
+
   riskState = {
     ...riskState,
     openPositions: await reservedLiveSlots(),
@@ -532,7 +550,10 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           const venueShares = await readVenueTradableShares(venue, ctx.walletAddress, tokenId);
           if (venueShares != null) exitShares = venueShares;
         } catch (error) {
-          log.warn({ err: String(error), tokenId }, "live EXIT venue shares skipped");
+          // Real-money safety: never fall back to a stale local share count
+          // when Binance inventory cannot be verified.
+          log.error({ err: String(error), tokenId }, "live EXIT blocked: Binance shares unavailable");
+          continue;
         }
         if (!(exitShares > 1e-8)) {
           log.info(
@@ -726,6 +747,11 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
   try {
     const applied = await syncLiveOrdersFromVenue(venue, ctx.walletAddress);
     log.info({ applied }, "live reconcile");
+    // REST is the authoritative account-state source for Prediction trading.
+    // Re-read venue inventory immediately after reconciliation so the DB
+    // reflects the actual Binance shares/PnL before the next cycle.
+    const venueSync = await syncLivePositionsFromVenue(venue, ctx, { claim: false });
+    log.info(venueSync, "live venue position sync after reconcile");
   } catch (error) {
     log.warn({ err: String(error) }, "live reconcile skipped");
   }

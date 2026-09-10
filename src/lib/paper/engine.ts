@@ -195,7 +195,20 @@ export function executePaperTrade(
     });
 
   const existing = seen.get(key);
-  if (existing && (stage !== "fill" || existing.status !== OrderStatus.SUBMITTED)) {
+  // A PARTIALLY_FILLED paper order must be fillable again. Only a terminal
+  // result is idempotent at the fill stage.
+  const terminal = new Set([
+    OrderStatus.FILLED,
+    OrderStatus.CANCELLED,
+    OrderStatus.FAILED,
+    OrderStatus.EXPIRED,
+  ]);
+  if (
+    existing &&
+    (stage !== "fill" ||
+      (existing.status !== OrderStatus.SUBMITTED &&
+        existing.status !== OrderStatus.PARTIALLY_FILLED))
+  ) {
     inc("paper.duplicate");
     return { ...existing, duplicate: true };
   }

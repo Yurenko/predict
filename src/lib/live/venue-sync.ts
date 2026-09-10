@@ -86,6 +86,124 @@ async function stampExpiredClaimTimers(now: Date): Promise<void> {
   }
 }
 
+
+async function ensureVenueOpenRows(
+  byToken: Map<string, VenuePositionNumbers>,
+): Promise<number> {
+  let createdOrRecovered = 0;
+
+  for (const [tokenId, venue] of byToken) {
+    if (!(venue.tradableShares != null && venue.tradableShares > 1e-8)) continue;
+    if (venue.expired) continue;
+
+    const existingByVenueId = venue.venuePositionId
+      ? await prisma.position.findFirst({
+          where: {
+            mode: TradingMode.LIVE,
+            venuePositionId: venue.venuePositionId,
+          },
+        })
+      : null;
+
+    const existingOpen = await prisma.position.findFirst({
+      where: {
+        mode: TradingMode.LIVE,
+        status: PositionStatus.OPEN,
+        tokenId,
+      },
+      orderBy: { openedAt: "desc" },
+    });
+
+    if (existingOpen) continue;
+
+    const outcome = await prisma.marketOutcome.findUnique({
+      where: { tokenId },
+      include: { market: true },
+    });
+    if (!outcome) {
+      log.error(
+        { tokenId, shares: venue.tradableShares },
+        "Binance has LIVE inventory but token is missing locally",
+      );
+      continue;
+    }
+
+    const latestOrder = await prisma.order.findFirst({
+      where: {
+        mode: TradingMode.LIVE,
+        tokenId,
+        side: "BUY",
+      },
+      orderBy: { createdAt: "desc" },
+      select: { strategyId: true, signalId: true },
+    });
+
+    const avgPrice = venue.avgPrice ?? 0;
+    const totalCost = venue.totalCost ?? venue.tradableShares * avgPrice;
+
+    if (existingByVenueId) {
+      await prisma.position.update({
+        where: { id: existingByVenueId.id },
+        data: {
+          status: PositionStatus.OPEN,
+          closedAt: null,
+          shares: venue.tradableShares,
+          avgPrice: avgPrice > 0 ? avgPrice : existingByVenueId.avgPrice,
+          totalCost: totalCost > 0 ? totalCost : existingByVenueId.totalCost,
+          unrealizedPnl: venue.unrealizedPnl ?? existingByVenueId.unrealizedPnl,
+          realizedPnl: venue.realizedPnl ?? existingByVenueId.realizedPnl,
+          rawPayload: payload({
+            source: "live-venue-recovery",
+            recoveredAt: new Date().toISOString(),
+            venuePositionId: venue.venuePositionId,
+          }),
+        },
+      });
+      createdOrRecovered += 1;
+      log.warn(
+        { tokenId, positionId: existingByVenueId.id, shares: venue.tradableShares },
+        "recovered CLOSED local position from Binance LIVE inventory",
+      );
+      continue;
+    }
+
+    // No local position exists, but Binance says the wallet owns tradable
+    // shares. Create a conservative recovery row so the bot cannot open a
+    // second position against real inventory. This is intentionally marked
+    // as venue-recovered and is never fabricated from a signal.
+    await prisma.position.create({
+      data: {
+        mode: TradingMode.LIVE,
+        venuePositionId: venue.venuePositionId ?? undefined,
+        strategyId: latestOrder?.strategyId ?? undefined,
+        marketId: outcome.marketId,
+        outcomeId: outcome.id,
+        signalId: latestOrder?.signalId ?? undefined,
+        tokenId,
+        side: "BUY",
+        status: PositionStatus.OPEN,
+        shares: venue.tradableShares,
+        avgPrice: avgPrice > 0 ? avgPrice : 0,
+        totalCost: totalCost > 0 ? totalCost : 0,
+        unrealizedPnl: venue.unrealizedPnl ?? 0,
+        realizedPnl: venue.realizedPnl ?? 0,
+        rawPayload: {
+          source: "live-venue-recovery",
+          recoveredAt: new Date().toISOString(),
+          venuePositionId: venue.venuePositionId,
+        },
+      },
+    });
+    createdOrRecovered += 1;
+    log.warn(
+      { tokenId, shares: venue.tradableShares, marketId: outcome.marketId },
+      "created LIVE recovery position from Binance inventory",
+    );
+  }
+
+  return createdOrRecovered;
+}
+
 async function overlayVenueNumbers(
   byToken: Map<string, VenuePositionNumbers>,
   now: Date,
@@ -327,6 +445,7 @@ async function redeemEligible(
 async function loadVenuePositions(
   venue: LivePositionVenue,
   ctx: LiveTradeContext,
+  options: { includeEnded?: boolean } = {},
 ): Promise<Map<string, VenuePositionNumbers>> {
   const byToken = new Map<string, VenuePositionNumbers>();
   for (const tab of VENUE_POSITION_TABS) {
@@ -347,14 +466,21 @@ async function loadVenuePositions(
       log.warn({ err: String(error), tab }, "queryPositions skipped");
     }
   }
-  try {
-    const settled = await venue.querySettledPositionHistory({
-      walletAddress: ctx.walletAddress,
-      limit: 100,
-    });
-    addVenueRows(byToken, settled.positions, "ENDED");
-  } catch (error) {
-    log.warn({ err: String(error) }, "querySettledPositionHistory skipped");
+  // ENDED history is not needed to maintain an OPEN position. ONGOING and
+  // PENDING_CLAIM are the authoritative live inventory states. Querying the
+  // full settled history every trading cycle adds a high-latency REST call
+  // and can delay a real-money EXIT. Fetch it only for explicit claim/recovery
+  // passes.
+  if (options.includeEnded) {
+    try {
+      const settled = await venue.querySettledPositionHistory({
+        walletAddress: ctx.walletAddress,
+        limit: 100,
+      });
+      addVenueRows(byToken, settled.positions, "ENDED");
+    } catch (error) {
+      log.warn({ err: String(error) }, "querySettledPositionHistory skipped");
+    }
   }
   return byToken;
 }
@@ -370,16 +496,21 @@ export async function syncLivePositionsFromVenue(
 ): Promise<{ updated: number; claimed: number }> {
   const now = new Date();
   await stampExpiredClaimTimers(now);
-  const byToken = await loadVenuePositions(venue, ctx);
+  const byToken = await loadVenuePositions(
+    venue,
+    ctx,
+    { includeEnded: options.immediate === true },
+  );
+  const recovered = await ensureVenueOpenRows(byToken);
   const overlayUpdated = await overlayVenueNumbers(byToken, now);
   const expiredClosed = await closeExpiredOpenRows(now);
   await stampExpiredClaimTimers(now);
   if (options.claim === false && options.immediate !== true) {
-    return { updated: overlayUpdated + expiredClosed, claimed: 0 };
+    return { updated: overlayUpdated + expiredClosed + recovered, claimed: 0 };
   }
   await refreshPendingRedeems(venue, ctx.walletAddress);
   const claimed = await redeemEligible(venue, ctx, byToken, now, options.immediate === true);
-  return { updated: overlayUpdated + expiredClosed, claimed };
+  return { updated: overlayUpdated + expiredClosed + recovered, claimed };
 }
 
 /** batchRedeem / redeem-status only. Safe to run after ENTER or in the background. */
@@ -390,7 +521,7 @@ export async function claimLiveWinnings(
 ): Promise<{ claimed: number }> {
   const now = new Date();
   await stampExpiredClaimTimers(now);
-  const byToken = await loadVenuePositions(venue, ctx);
+  const byToken = await loadVenuePositions(venue, ctx, { includeEnded: true });
   await refreshPendingRedeems(venue, ctx.walletAddress);
   const claimed = await redeemEligible(venue, ctx, byToken, now, options.immediate === true);
   return { claimed };

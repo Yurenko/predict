@@ -107,7 +107,8 @@ export async function closeLivePosition(positionId: string): Promise<
     );
     if (venueShares != null) shares = venueShares;
   } catch (error) {
-    log.warn({ err: String(error), positionId }, "manual close venue shares skipped");
+    log.error({ err: String(error), positionId }, "manual close blocked: Binance shares unavailable");
+    return { ok: false, reason: "venue_shares_unavailable" };
   }
   if (!(shares > 1e-8)) return { ok: false, reason: "below_market_min_amount" };
 
