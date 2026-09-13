@@ -17,8 +17,7 @@ import { persistPaperTrade } from "@/lib/paper/persist";
 import { manualCloseSignal } from "@/lib/paper/close";
 import type { PaperBook, PaperTradeRequest } from "@/lib/paper/engine";
 import { limitsFromEnv } from "@/lib/risk/limits";
-import { loadRiskState, persistRiskSnapshot } from "@/lib/risk/persist";
-import { recordClosedTrade } from "@/lib/risk/state";
+import { loadRiskState } from "@/lib/risk/persist";
 import { ensureLiveRuntime } from "@/lib/record/live-runtime";
 
 const log = childLogger({ component: "live-manual-close" });
@@ -182,20 +181,6 @@ export async function closeLivePosition(positionId: string): Promise<
     await syncLiveOrdersFromVenue(runtime.venue, runtime.ctx.walletAddress);
   } catch (error) {
     log.warn({ err: String(error), positionId }, "live close placed; reconcile deferred");
-  }
-
-  const closed = await prisma.position.findUnique({
-    where: { id: row.id },
-    select: { status: true, realizedPnl: true },
-  });
-  if (closed?.status && closed.status !== PositionStatus.OPEN) {
-    const pnl = asNumber(closed.realizedPnl) ?? 0;
-    const next = recordClosedTrade(riskState, pnl, now, limits);
-    await persistRiskSnapshot({
-      ...next.state,
-      openPositions: Math.max(0, riskState.openPositions - 1),
-      openNotional: Math.max(0, riskState.openNotional - shares * (asNumber(row.avgPrice) ?? 0)),
-    });
   }
 
   log.info(

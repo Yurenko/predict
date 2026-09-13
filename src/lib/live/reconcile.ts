@@ -12,6 +12,9 @@ import {
 } from "@/lib/live/position-fill";
 import { clearLiveFlatten } from "@/lib/live/flatten";
 import { inc } from "@/lib/observability/metrics";
+import { limitsFromEnv } from "@/lib/risk/limits";
+import { loadRiskState, persistRiskSnapshot } from "@/lib/risk/persist";
+import { recordClosedTrade } from "@/lib/risk/state";
 
 const log = childLogger({ component: "live-reconcile" });
 
@@ -104,8 +107,8 @@ function jsonPayload(
  *   DB already applied = 40
  *   next execution = 60, not another 100.
  */
-export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolean> {
-  if (!row.orderId) return false;
+export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<{ applied: boolean; realizedDelta: number }> {
+  if (!row.orderId) return { applied: false, realizedDelta: 0 };
 
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({
@@ -116,7 +119,7 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolea
         signal: { select: { strategyId: true } },
       },
     });
-    if (!order) return false;
+    if (!order) return { applied: false, realizedDelta: 0 };
 
     const parsed = fillFromOfficial(row);
     const nextStatus = parsed.status ?? order.status;
@@ -201,7 +204,7 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolea
 
     // No new venue fill since the last poll. The order status may still have
     // changed (e.g. PARTIALLY_FILLED -> FILLED), which is enough to return.
-    if (!fill) return true;
+    if (!fill) return { applied: true, realizedDelta: 0 };
 
     let open = order.position?.status === PositionStatus.OPEN ? order.position : null;
     if (!open) {
@@ -250,7 +253,7 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolea
         },
         "LIVE SELL fill has no local OPEN position; execution recorded without synthetic position",
       );
-      return true;
+      return { applied: true, realizedDelta: 0 };
     }
 
     const applied = applyLiveFillToPosition(
@@ -377,8 +380,38 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<boolea
     }
 
     inc("live.reconcile_fill");
-    return true;
+    return { applied: true, realizedDelta: applied.realizedDelta };
   });
+}
+
+async function persistLiveRealizedDelta(delta: number, now = new Date()): Promise<void> {
+  if (!Number.isFinite(delta) || Math.abs(delta) < 1e-12) return;
+  try {
+    const state = await loadRiskState();
+    const limits = limitsFromEnv();
+    const next = recordClosedTrade(
+      { ...state, mode: TradingMode.LIVE },
+      delta,
+      now,
+      limits,
+    );
+    const open = await prisma.position.findMany({
+      where: { mode: TradingMode.LIVE, status: PositionStatus.OPEN },
+      select: { shares: true, avgPrice: true },
+    });
+    const openNotional = open.reduce(
+      (sum, row) => sum + (asNumber(row.shares) ?? 0) * (asNumber(row.avgPrice) ?? 0),
+      0,
+    );
+    await persistRiskSnapshot({
+      ...next.state,
+      mode: TradingMode.LIVE,
+      openPositions: open.length,
+      openNotional,
+    });
+  } catch (error) {
+    log.warn({ err: String(error), delta }, "live realized PnL risk sync skipped");
+  }
 }
 
 export async function reconcileLiveOrders(options: {
@@ -387,13 +420,17 @@ export async function reconcileLiveOrders(options: {
 }): Promise<number> {
   const rows = [...(options.history.orders ?? []), ...(options.active.orders ?? [])];
   let applied = 0;
+  let realizedDelta = 0;
   for (const row of rows) {
     try {
-      if (await applyOfficialLiveOrder(row)) applied += 1;
+      const result = await applyOfficialLiveOrder(row);
+      if (result.applied) applied += 1;
+      realizedDelta += result.realizedDelta;
     } catch (error) {
       log.warn({ err: String(error), orderId: row.orderId }, "live reconcile row failed");
     }
   }
+  await persistLiveRealizedDelta(realizedDelta);
   return applied;
 }
 

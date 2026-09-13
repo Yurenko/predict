@@ -21,6 +21,9 @@ import {
 } from "@/lib/live/claim";
 import { clearLiveFlatten } from "@/lib/live/flatten";
 import { asNumber } from "@/lib/normalize/numbers";
+import { limitsFromEnv } from "@/lib/risk/limits";
+import { loadRiskState, persistRiskSnapshot } from "@/lib/risk/persist";
+import { recordClosedTrade } from "@/lib/risk/state";
 
 const log = childLogger({ component: "live-venue-sync" });
 
@@ -207,14 +210,15 @@ async function ensureVenueOpenRows(
 async function overlayVenueNumbers(
   byToken: Map<string, VenuePositionNumbers>,
   now: Date,
-): Promise<number> {
-  if (byToken.size === 0) return 0;
+): Promise<{ updated: number; realizedDelta: number }> {
+  if (byToken.size === 0) return { updated: 0, realizedDelta: 0 };
   const rows = await prisma.position.findMany({
     where: { mode: TradingMode.LIVE, tokenId: { in: [...byToken.keys()] } },
     orderBy: { openedAt: "desc" },
   });
   const seen = new Set<string>();
   let updated = 0;
+  let realizedDelta = 0;
   for (const row of rows) {
     const venue = byToken.get(row.tokenId);
     if (!venue) continue;
@@ -228,9 +232,31 @@ async function overlayVenueNumbers(
         : {};
     const bookClose = bookClosePrice(row.rawPayload);
     const settled = venue.expired === true;
+    const localRealized = asNumber(row.realizedPnl) ?? 0;
+    let rowRealizedDelta = 0;
 
     if (venue.venuePositionId) data.venuePositionId = venue.venuePositionId;
     if (venue.claimAmount != null) extra.claimAmount = venue.claimAmount;
+    if (venue.tradableShares != null) extra.venueTradableShares = venue.tradableShares;
+    if (venue.avgPrice != null) extra.venueAvgPrice = venue.avgPrice;
+    if (venue.totalCost != null) extra.venueTotalCost = venue.totalCost;
+    if (venue.realizedPnl != null) {
+      extra.venueRealizedPnl = venue.realizedPnl;
+      rowRealizedDelta = venue.realizedPnl - localRealized;
+      data.realizedPnl = venue.realizedPnl;
+    } else if (settled && venue.claimAmount != null) {
+      // Some settled losers do not expose realizedPnl, but Binance still
+      // exposes the settlement amount. Apply the settlement delta to the
+      // remaining local cost so a losing expiry is not silently recorded as 0.
+      const remainingCost = asNumber(row.totalCost) ?? 0;
+      const settlementDelta = venue.claimAmount - remainingCost;
+      if (Number.isFinite(settlementDelta)) {
+        data.realizedPnl = localRealized + settlementDelta;
+        extra.venueRealizedPnl = data.realizedPnl;
+        rowRealizedDelta = settlementDelta;
+      }
+    }
+    if (venue.unrealizedPnl != null) extra.venueUnrealizedPnl = venue.unrealizedPnl;
 
     if (row.status === PositionStatus.OPEN && !settled) {
       if (venue.tradableShares != null) data.shares = venue.tradableShares;
@@ -242,14 +268,12 @@ async function overlayVenueNumbers(
     if (row.status === PositionStatus.OPEN && settled) {
       data.status = PositionStatus.CLOSED;
       data.closedAt = row.closedAt ?? now;
-      if (venue.realizedPnl != null) data.realizedPnl = venue.realizedPnl;
       if (venue.closePrice != null && (bookClose == null || bookClose <= 0)) {
         extra.closePrice = venue.closePrice;
       }
       Object.assign(extra, clearLiveFlatten(stampClaimEligibleAt(extra, new Date((row.closedAt ?? now).getTime() + LIVE_CLAIM_DELAY_MS))));
       data.rawPayload = payload(extra);
     } else if (row.status === PositionStatus.CLOSED) {
-      if (settled && venue.realizedPnl != null) data.realizedPnl = venue.realizedPnl;
       if (settled && venue.closePrice != null && (bookClose == null || extra.expired === true)) {
         extra.closePrice = venue.closePrice;
       }
@@ -262,6 +286,7 @@ async function overlayVenueNumbers(
     if (Object.keys(data).length === 0) continue;
     try {
       await prisma.position.update({ where: { id: row.id }, data });
+      realizedDelta += rowRealizedDelta;
       updated += 1;
     } catch (error) {
       log.warn({ err: String(error), tokenId: row.tokenId }, "venue overlay skipped");
@@ -269,6 +294,7 @@ async function overlayVenueNumbers(
         delete data.venuePositionId;
         try {
           await prisma.position.update({ where: { id: row.id }, data });
+          realizedDelta += rowRealizedDelta;
           updated += 1;
         } catch (retryError) {
           log.warn({ err: String(retryError), tokenId: row.tokenId }, "venue overlay retry skipped");
@@ -276,43 +302,7 @@ async function overlayVenueNumbers(
       }
     }
   }
-  return updated;
-}
-
-/** Dust leftover cannot SELL under Binance $1.5 min — close locally once the window ended. */
-async function closeExpiredOpenRows(now: Date): Promise<number> {
-  const rows = await prisma.position.findMany({
-    where: { mode: TradingMode.LIVE, status: PositionStatus.OPEN },
-    include: { market: { include: { topic: { select: { endDate: true } } } } },
-  });
-  let closed = 0;
-  for (const row of rows) {
-    if (!isExpiredAt(now, row.market.topic.endDate)) continue;
-    const extra: Record<string, unknown> =
-      row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
-        ? { ...(row.rawPayload as Record<string, unknown>) }
-        : {};
-    const closedAt = row.closedAt ?? row.market.topic.endDate ?? now;
-    try {
-      await prisma.position.update({
-        where: { id: row.id },
-        data: {
-          status: PositionStatus.CLOSED,
-          closedAt,
-          rawPayload: payload(
-            clearLiveFlatten(
-              stampClaimEligibleAt(extra, new Date(closedAt.getTime() + LIVE_CLAIM_DELAY_MS)),
-            ),
-          ),
-        },
-      });
-      closed += 1;
-      log.info({ tokenId: row.tokenId, market: row.marketId }, "live expired OPEN closed locally");
-    } catch (error) {
-      log.warn({ err: String(error), tokenId: row.tokenId }, "live expired OPEN close skipped");
-    }
-  }
-  return closed;
+  return { updated, realizedDelta };
 }
 
 async function refreshPendingRedeems(
@@ -485,8 +475,39 @@ async function loadVenuePositions(
   return byToken;
 }
 
+async function persistVenueRealizedDelta(delta: number, now: Date): Promise<void> {
+  if (!Number.isFinite(delta) || Math.abs(delta) < 1e-12) return;
+  try {
+    const state = await loadRiskState();
+    const limits = limitsFromEnv();
+    const next = recordClosedTrade(
+      { ...state, mode: TradingMode.LIVE },
+      delta,
+      now,
+      limits,
+    );
+    const open = await prisma.position.findMany({
+      where: { mode: TradingMode.LIVE, status: PositionStatus.OPEN },
+      select: { shares: true, avgPrice: true },
+    });
+    const openNotional = open.reduce(
+      (sum, row) => sum + (asNumber(row.shares) ?? 0) * (asNumber(row.avgPrice) ?? 0),
+      0,
+    );
+    await persistRiskSnapshot({
+      ...next.state,
+      mode: TradingMode.LIVE,
+      openPositions: open.length,
+      openNotional,
+    });
+  } catch (error) {
+    log.warn({ err: String(error), delta }, "venue realized PnL risk sync skipped");
+  }
+}
+
 /**
- * Overlay Binance shares/PnL and locally close expired OPEN rows.
+ * Overlay Binance shares/PnL. Binance remains authoritative for live inventory,
+ * average price and settled PnL; local DB is retained as the execution ledger.
  * Does not call batchRedeem — claim is a separate pass so ENTER is not blocked.
  */
 export async function syncLivePositionsFromVenue(
@@ -496,21 +517,29 @@ export async function syncLivePositionsFromVenue(
 ): Promise<{ updated: number; claimed: number }> {
   const now = new Date();
   await stampExpiredClaimTimers(now);
+  const expiredOpen = await prisma.position.findMany({
+    where: {
+      mode: TradingMode.LIVE,
+      status: PositionStatus.OPEN,
+      market: { topic: { endDate: { lte: now } } },
+    },
+    select: { tokenId: true },
+  });
   const byToken = await loadVenuePositions(
     venue,
     ctx,
-    { includeEnded: options.immediate === true },
+    { includeEnded: options.immediate === true || expiredOpen.length > 0 },
   );
   const recovered = await ensureVenueOpenRows(byToken);
-  const overlayUpdated = await overlayVenueNumbers(byToken, now);
-  const expiredClosed = await closeExpiredOpenRows(now);
+  const overlay = await overlayVenueNumbers(byToken, now);
+  await persistVenueRealizedDelta(overlay.realizedDelta, now);
   await stampExpiredClaimTimers(now);
   if (options.claim === false && options.immediate !== true) {
-    return { updated: overlayUpdated + expiredClosed + recovered, claimed: 0 };
+    return { updated: overlay.updated + recovered, claimed: 0 };
   }
   await refreshPendingRedeems(venue, ctx.walletAddress);
   const claimed = await redeemEligible(venue, ctx, byToken, now, options.immediate === true);
-  return { updated: overlayUpdated + expiredClosed + recovered, claimed };
+  return { updated: overlay.updated + recovered, claimed };
 }
 
 /** batchRedeem / redeem-status only. Safe to run after ENTER or in the background. */
@@ -522,6 +551,8 @@ export async function claimLiveWinnings(
   const now = new Date();
   await stampExpiredClaimTimers(now);
   const byToken = await loadVenuePositions(venue, ctx, { includeEnded: true });
+  const overlay = await overlayVenueNumbers(byToken, now);
+  await persistVenueRealizedDelta(overlay.realizedDelta, now);
   await refreshPendingRedeems(venue, ctx.walletAddress);
   const claimed = await redeemEligible(venue, ctx, byToken, now, options.immediate === true);
   return { claimed };

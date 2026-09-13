@@ -242,6 +242,7 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       openRows,
       closedCount,
       closedRealizedAgg,
+      ledgerRealizedAgg,
       closedCurveRows,
       orderCount,
       signalCount,
@@ -251,12 +252,16 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       riskEvents,
     ] = await Promise.all([
       prisma.position.findMany({
-        where: { status: "OPEN" },
+        where: { mode: payload.tradingMode, status: "OPEN" },
         include: positionInclude,
       }),
-      prisma.position.count({ where: { status: { not: "OPEN" } } }),
+      prisma.position.count({ where: { mode: payload.tradingMode, status: { not: "OPEN" } } }),
       prisma.position.aggregate({
-        where: { status: { not: "OPEN" } },
+        where: { mode: payload.tradingMode, status: { not: "OPEN" } },
+        _sum: { realizedPnl: true },
+      }),
+      prisma.position.aggregate({
+        where: { mode: payload.tradingMode },
         _sum: { realizedPnl: true },
       }),
       prisma.position.findMany({
@@ -292,7 +297,7 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
 
     const [closedRows, orders, signals] = await Promise.all([
       prisma.position.findMany({
-        where: { status: { not: "OPEN" } },
+        where: { mode: payload.tradingMode, status: { not: "OPEN" } },
         orderBy: { openedAt: "desc" },
         skip: ledgerSkip(positionsPage, pageSize),
         take: pageSize,
@@ -394,10 +399,18 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       };
     });
 
+    // The RiskState is a safety snapshot and can lag one reconciliation tick.
+    // For the dashboard/equity curve use the trading ledger as the source of
+    // truth, including realized PnL from partially closed OPEN positions.
+    const ledgerRealized = asNumber(ledgerRealizedAgg._sum.realizedPnl) ?? 0;
+    const ledgerRealizedEquity = payload.limits.bankrollUsdt + ledgerRealized;
+    payload.risk.realizedEquity = ledgerRealizedEquity;
+    payload.risk.equity = ledgerRealizedEquity;
+
     const openMark = sumOpenUnrealized(payload.positions);
     payload.risk.unrealizedPnl = openMark.pnl;
     payload.risk.openMissingMark = openMark.missingMark;
-    payload.risk.mtmEquity = mtmEquity(payload.risk.realizedEquity, openMark.pnl);
+    payload.risk.mtmEquity = mtmEquity(ledgerRealizedEquity, openMark.pnl);
     payload.equityCurve = equityCurveFromClosed({
       bankroll: payload.limits.bankrollUsdt,
       now: new Date(),

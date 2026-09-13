@@ -1,4 +1,4 @@
-import { TradingMode } from "@prisma/client";
+import { OrderSide, TradingMode } from "@prisma/client";
 import { OfficialPredictionAdapter } from "@/lib/binance/prediction-adapter";
 import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { prisma } from "@/lib/db/prisma";
@@ -19,6 +19,7 @@ import {
   flattenExpiredPositions,
   hasPredictionWallet,
   persistPaperTrade,
+  manualCloseSignal,
   shouldSkipPeerEnter,
   type PaperBook,
   type PaperQuote,
@@ -45,6 +46,7 @@ import {
   isFreshLiveBook,
 } from "@/lib/live/notional";
 import { LIVE_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
+import { isLiveFlattening } from "@/lib/live/flatten";
 import {
   clearExpiredPendingFlips,
   clearPendingFlip,
@@ -130,6 +132,135 @@ async function pruneExpiredLivePendings(now: Date): Promise<void> {
     new Map(markets.map((row) => [row.id, row.topic.endDate])),
     now,
   );
+}
+
+async function retryLiveFlattening(
+  ctx: LiveTradeContext,
+  venue: OfficialPredictionAdapter,
+): Promise<number> {
+  const rows = await prisma.position.findMany({
+    where: { mode: TradingMode.LIVE, status: "OPEN" },
+    include: {
+      strategy: true,
+      outcome: { select: { name: true } },
+      market: {
+        include: {
+          topic: true,
+          snapshots: { orderBy: { observedAt: "desc" as const }, take: 1 },
+        },
+      },
+    },
+  });
+
+  let submitted = 0;
+  const limits = limitsFromEnv();
+  for (const row of rows) {
+    if (!isLiveFlattening(row.rawPayload)) continue;
+    if (isExpiredAt(new Date(), row.market.topic.endDate)) continue;
+
+    const inflight = await prisma.order.findFirst({
+      where: {
+        mode: TradingMode.LIVE,
+        marketId: row.marketId,
+        tokenId: row.tokenId,
+        status: { in: LIVE_INFLIGHT_STATUSES },
+      },
+      select: { id: true },
+    });
+    if (inflight) continue;
+
+    const live = await readLiveOrderbook(row.market.venueMarketId);
+    if (!live) continue;
+    const liveAgeMs = live.updateTimestampMs
+      ? Date.now() - live.updateTimestampMs
+      : null;
+    if (!isFreshLiveBook(liveAgeMs)) continue;
+
+    let shares = asNumber(row.shares) ?? 0;
+    try {
+      const venueShares = await readVenueTradableShares(venue, ctx.walletAddress, row.tokenId);
+      if (venueShares != null) shares = venueShares;
+    } catch (error) {
+      log.warn({ err: String(error), tokenId: row.tokenId }, "live flatten retry skipped: shares unavailable");
+      continue;
+    }
+    if (!(shares > 1e-8)) continue;
+
+    const downToken = outcomeIsDownToken(row.outcome?.name);
+    const snap = row.market.snapshots[0];
+    const rawBook = {
+      bestBid: asNumber(live.bestBid),
+      bestAsk: asNumber(live.bestAsk),
+      lastPrice: asNumber(snap?.lastPrice),
+    };
+    const priced = downToken ? invertBinaryBook(rawBook) : rawBook;
+    const avgPrice = asNumber(row.avgPrice) ?? 0;
+    const exitQuote = await quoteLiveExitSell({
+      tokenId: row.tokenId,
+      shares,
+      bestBid: priced.bestBid,
+      bestAsk: priced.bestAsk,
+      lastPrice: priced.lastPrice,
+      avgPrice,
+      slippageBps: limits.maxSlippageBps,
+    });
+    if (exitQuote.belowMin || !exitQuote.quote) continue;
+
+    const now = new Date();
+    const strategyId = row.strategy?.slug ?? "flatten-retry";
+    const chance = asNumber(snap?.chance) ?? asNumber(snap?.midPrice);
+    const book: PaperBook = {
+      bestBid: priced.bestBid,
+      bestAsk: priced.bestAsk,
+      lastPrice: priced.lastPrice,
+      liquidity: asNumber(snap?.liquidity),
+      bidDepth: asNumber(snap?.bidDepth),
+      askDepth: asNumber(snap?.askDepth),
+      timeToExpirySec: row.market.topic.endDate
+        ? Math.max(0, (row.market.topic.endDate.getTime() - now.getTime()) / 1000)
+        : null,
+      dataAgeMs: liveAgeMs ?? 0,
+    };
+    const signal = manualCloseSignal({
+      strategyId,
+      marketId: row.marketId,
+      now,
+      chance,
+    });
+    const request: PaperTradeRequest = {
+      mode: TradingMode.LIVE,
+      action: "EXIT",
+      strategyId,
+      marketId: row.marketId,
+      outcomeId: row.outcomeId ?? undefined,
+      tokenId: row.tokenId,
+      signal,
+      book,
+      quote: exitQuote.quote,
+      now,
+      requestedNotional: exitQuote.notional,
+      maxPriceImpact: limits.maxPriceImpact,
+      positionSide: row.side,
+      positionId: row.id,
+      orderSide: OrderSide.SELL,
+      orderType: "LIMIT",
+      priceLimit: exitQuote.priceLimit,
+      exitIntent: exitIntentFromOutcome(row.outcome?.name),
+      idempotencyWindowMs: env.LIVE_IDEMPOTENCY_MS,
+      idempotencySalt: `flatten-retry-${shares.toFixed(8)}-${Math.floor(now.getTime() / 5_000)}`,
+    };
+
+    const riskState = await loadRiskState();
+    const result = await executeLiveTrade(request, riskState, limits, venue, ctx);
+    if (!result.placed) continue;
+    await persistPaperTrade({ request, result, signal });
+    submitted += 1;
+    log.info(
+      { positionId: row.id, tokenId: row.tokenId, shares, priceLimit: exitQuote.priceLimit, venueOrderId: result.venueOrderId },
+      "live flatten retry submitted",
+    );
+  }
+  return submitted;
 }
 
 async function liveSlotUsage(): Promise<{ reserved: number; openAndInflight: number }> {
@@ -739,6 +870,8 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
     // reflects the actual Binance shares/PnL before the next cycle.
     const venueSync = await syncLivePositionsFromVenue(venue, ctx, { claim: false });
     log.info(venueSync, "live venue position sync after reconcile");
+    const flattenRetries = await retryLiveFlattening(ctx, venue);
+    if (flattenRetries > 0) log.info({ flattenRetries }, "live flatten retries");
   } catch (error) {
     log.warn({ err: String(error) }, "live reconcile skipped");
   }
