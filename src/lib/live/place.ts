@@ -28,6 +28,7 @@ export function buildMarketPlaceOrder(draft: LivePlaceDraft): PlaceOrderParams {
     quoteId: draft.quoteId,
     timeInForce: "FOK",
     accountType: draft.accountType,
+    fundingSource: "MPC",
     orderType: "MARKET",
     slippageBps,
   };
@@ -44,6 +45,7 @@ export function buildLimitPlaceOrder(
     quoteId: draft.quoteId,
     timeInForce: "GTC",
     accountType: draft.accountType,
+    fundingSource: "MPC",
     orderType: "LIMIT",
     slippageBps,
     priceLimit: formatLimitPrice(draft.priceLimit),

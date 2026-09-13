@@ -57,6 +57,7 @@ export async function fetchOfficialPaperQuoteResult(options: {
       orderType: orderType as GetQuoteParams["orderType"],
       slippageBps: Math.min(Math.max(Math.trunc(options.slippageBps), 1), 10_000),
       chainId: env.BINANCE_PREDICTION_CHAIN_ID,
+      fundingSource: "MPC",
       ...(orderType === "LIMIT" && options.priceLimit != null && options.priceLimit > 0
         ? { priceLimit: options.priceLimit.toFixed(8) }
         : {}),

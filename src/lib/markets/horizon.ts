@@ -6,7 +6,12 @@ export const DAY_SEC = 86_400;
 export const LIST_PAGE_SIZE = 100;
 export const LIST_MAX_PAGES = 5;
 
-export type HorizonClass = "expired" | "too_soon" | "in_window" | "too_far" | "unknown";
+export type HorizonClass =
+  | "expired"
+  | "too_soon"
+  | "in_window"
+  | "too_far"
+  | "unknown";
 
 export interface HorizonWindow {
   now: Date;
@@ -71,7 +76,10 @@ export interface ListedTopicLike {
 
 function topicSearchText(topic: ListedTopicLike): string {
   return [topic.title, topic.question, topic.symbol]
-    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .filter(
+      (part): part is string =>
+        typeof part === "string" && part.trim().length > 0,
+    )
     .join(" ");
 }
 
@@ -80,22 +88,26 @@ function minutesBetweenClockRange(text: string): number | null {
     /(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)/i,
   );
   if (!range) return null;
-  const toMin = (hourRaw: string, minuteRaw: string | undefined, ampm: string) => {
+  const toMin = (
+    hourRaw: string,
+    minuteRaw: string | undefined,
+    ampm: string,
+  ) => {
     let hour = Number(hourRaw) % 12;
     if (/pm/i.test(ampm)) hour += 12;
     return hour * 60 + Number(minuteRaw ?? "0");
   };
-  let duration = toMin(range[4], range[5], range[6]) - toMin(range[1], range[2], range[3]);
+  let duration =
+    toMin(range[4], range[5], range[6]) - toMin(range[1], range[2], range[3]);
   if (duration < 0) duration += 24 * 60;
   return duration;
 }
 
 function isShortCryptoAsset(text: string, symbol?: string | null): boolean {
   const normalized = symbol?.trim().toUpperCase() ?? "";
-  if ((SHORT_CRYPTO_SYMBOLS as readonly string[]).includes(normalized)) return true;
-  return (
-    /ETHUSDT|\bETH\b|Ethereum/i.test(text)
-  );
+  if ((SHORT_CRYPTO_SYMBOLS as readonly string[]).includes(normalized))
+    return true;
+  return /ETHUSDT|\bETH\b|Ethereum/i.test(text);
 }
 
 function isShortCryptoWindow(text: string): boolean {
@@ -109,13 +121,21 @@ function isShortCryptoWindow(text: string): boolean {
 export function isShortCryptoUpDownMarket(topic: ListedTopicLike): boolean {
   const text = topicSearchText(topic);
   if (!text) return false;
-  return isShortCryptoAsset(text, topic.symbol) && /up or down/i.test(text) && isShortCryptoWindow(text);
+  return (
+    isShortCryptoAsset(text, topic.symbol) &&
+    /up or down/i.test(text) &&
+    isShortCryptoWindow(text)
+  );
 }
 
 export function isShortCryptoUpDownRow(market: {
   title?: string | null;
   question?: string | null;
-  topic?: { title?: string | null; question?: string | null; symbol?: string | null } | null;
+  topic?: {
+    title?: string | null;
+    question?: string | null;
+    symbol?: string | null;
+  } | null;
 }): boolean {
   return isShortCryptoUpDownMarket({
     title: [market.topic?.title, market.title].filter(Boolean).join(" "),
@@ -199,7 +219,9 @@ export function uniqueTopicsById<T extends ListedTopicLike>(topics: T[]): T[] {
   return [...byId.values()];
 }
 
-export function sortTopicsByEndDate<T extends ListedTopicLike>(topics: T[]): T[] {
+export function sortTopicsByEndDate<T extends ListedTopicLike>(
+  topics: T[],
+): T[] {
   return [...topics].sort((a, b) => {
     const left = asDate(a.endDate)?.getTime() ?? Number.POSITIVE_INFINITY;
     const right = asDate(b.endDate)?.getTime() ?? Number.POSITIVE_INFINITY;

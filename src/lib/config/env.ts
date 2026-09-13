@@ -20,27 +20,45 @@ const envSchema = z.object({
   BINANCE_PAPER_API_SECRET: z.string().optional().default(""),
   BINANCE_LIVE_API_KEY: z.string().optional().default(""),
   BINANCE_LIVE_API_SECRET: z.string().optional().default(""),
-  BINANCE_SPOT_REST_BASE_URL: z
-    .string()
-    .default("https://api.binance.com"),
-  BINANCE_SPOT_WS_BASE_URL: z
-    .string()
-    .default("wss://stream.binance.com:9443"),
+  BINANCE_SPOT_REST_BASE_URL: z.string().default("https://api.binance.com"),
+  BINANCE_SPOT_WS_BASE_URL: z.string().default("wss://stream.binance.com:9443"),
   BINANCE_PREDICTION_REST_BASE_URL: z
     .string()
     .default("https://api.binance.com"),
-  BINANCE_PREDICTION_WSS_URL: z.string().default("wss://api.binance.com/sapi/wss"),
+  BINANCE_PREDICTION_WSS_URL: z
+    .string()
+    .default("wss://api.binance.com/sapi/wss"),
   BINANCE_PREDICTION_CHAIN_ID: z.string().default("56"),
   BINANCE_PREDICTION_WALLET_ADDRESS: z.string().optional().default(""),
   BINANCE_PREDICTION_WALLET_ID: z.string().optional().default(""),
   BINANCE_PREDICTION_ACCOUNT_TYPE: z.enum(["SPOT", "FUNDING"]).default("SPOT"),
-  PREDICTION_MIN_REQUEST_INTERVAL_MS: z.coerce.number().int().positive().default(4000),
+  PREDICTION_MIN_REQUEST_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(4000),
   COLLECTOR_L1_CATEGORY: z.string().default(""),
-  COLLECTOR_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
-  COLLECTOR_REST_DISCOVERY_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
-  COLLECTOR_WS_PERSIST_MIN_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
+  COLLECTOR_POLL_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60_000),
+  COLLECTOR_REST_DISCOVERY_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60_000),
+  COLLECTOR_WS_PERSIST_MIN_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1_000),
   COLLECTOR_MAX_TOPICS: z.coerce.number().int().positive().default(20),
-  COLLECTOR_MAX_TIME_TO_EXPIRY_SEC: z.coerce.number().int().positive().default(86_400),
+  COLLECTOR_MAX_TIME_TO_EXPIRY_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(86_400),
   COLLECTOR_UNDERLYING_SYMBOLS: z
     .string()
     .default("ETHUSDT")
@@ -71,8 +89,12 @@ const envSchema = z.object({
   PAPER_IDEMPOTENCY_MS: z.coerce.number().int().positive().default(5_000),
   LIVE_LOOP_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   LIVE_IDEMPOTENCY_MS: z.coerce.number().int().positive().default(5_000),
-  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  LOG_LEVEL: z
+    .enum(["fatal", "error", "warn", "info", "debug", "trace"])
+    .default("info"),
+  NODE_ENV: z
+    .enum(["development", "test", "production"])
+    .default("development"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

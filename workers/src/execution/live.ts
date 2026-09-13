@@ -41,7 +41,6 @@ import { exitIntentFromOutcome } from "@/lib/live/intent-label";
 import { readVenueTradableShares } from "@/lib/live/venue-shares";
 import {
   LIVE_MIN_ORDER_USDT,
-  canLiveEnterNotional,
   clipLiveOrderNotional,
   isFreshLiveBook,
 } from "@/lib/live/notional";
@@ -59,7 +58,6 @@ import {
   shouldCancelPendingFlip,
   writePendingFlip,
 } from "@/lib/live/pending-flip";
-import { fetchLiveUsdtAvailable } from "@/lib/live/wallet-usdt";
 import { claimLiveWinnings, syncLivePositionsFromVenue } from "@/lib/live/venue-sync";
 import { selectPrimarySnapshot, tickFromSnapshot } from "@/lib/normalize/tick";
 
@@ -250,7 +248,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
     openPositions: await reservedLiveSlots(),
   };
 
-  const availableUsdt = await fetchLiveUsdtAvailable(ctx.accountType);
   const binaryMode = DEFAULT_LIVE_BINARY_MODE;
   const oppositeCloses = liveOppositeCloses(binaryMode);
 
@@ -599,19 +596,9 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           skips.belowMin += 1;
           continue;
         }
-        if (!canLiveEnterNotional(availableUsdt, quotedNotional)) {
-          skips.usdt += 1;
-          log.info(
-            {
-              slug: row.slug,
-              market: market.venueMarketId,
-              availableUsdt,
-              quotedNotional,
-            },
-            "live ENTER skipped: not enough USDT",
-          );
-          continue;
-        }
+        // LIVE entries use the Prediction wallet (fundingSource=MPC).
+        // Do not gate the order using Spot/Funding CEX balances; Binance validates
+        // the actual Prediction-wallet balance when the quote/order is executed.
         quote = await fetchOfficialPaperQuote({
           tokenId,
           side: trade.orderSide,
@@ -760,7 +747,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
 
   const open = await countOpenLivePositions();
   log.info(
-    { enabled: enabled.length, considered, submitted, open, binaryMode, availableUsdt, ...skips },
+    { enabled: enabled.length, considered, submitted, open, binaryMode, fundingSource: "MPC", ...skips },
     "live cycle complete",
   );
   return { enabled: enabled.length, considered, submitted, open };

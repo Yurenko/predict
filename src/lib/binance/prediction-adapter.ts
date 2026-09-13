@@ -60,6 +60,7 @@ export interface BinancePredictionAdapter {
     params: GetRedeemStatusParams,
   ): Promise<W3WPredictionRestAPI.GetRedeemStatusResponse>;
   listPredictionWallets(): Promise<W3WPredictionRestAPI.ListPredictionWalletsResponse>;
+  queryPaymentOptionBalances(): Promise<W3WPredictionRestAPI.QueryPaymentOptionBalancesResponse>;
 }
 
 function toNumericId(value: string | number | bigint): number | bigint {
@@ -209,6 +210,10 @@ export class OfficialPredictionAdapter implements BinancePredictionAdapter {
 
   listPredictionWallets() {
     return this.call(() => this.client.restAPI.listPredictionWallets());
+  }
+
+  queryPaymentOptionBalances() {
+    return this.call(() => this.client.restAPI.queryPaymentOptionBalances());
   }
 
   private async call<T>(

@@ -116,6 +116,7 @@ describe("official live helpers", () => {
       quoteId: "q-1",
       timeInForce: "FOK",
       accountType: "SPOT",
+      fundingSource: "MPC",
       orderType: "MARKET",
       slippageBps: 50,
     });
@@ -269,7 +270,7 @@ describe("executeLiveTrade", () => {
     expect(placeOrder).toHaveBeenCalledTimes(1);
   });
 
-  it("still blocks an ENTER under the $1.5 venue min", async () => {
+  it("still blocks an ENTER under the configured $1 venue min", async () => {
     const placeOrder = vi.fn();
     const result = await executeLiveTrade(
       request({ requestedNotional: 0.38, action: "ENTER" }),
