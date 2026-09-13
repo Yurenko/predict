@@ -227,32 +227,6 @@ export function mapVenuePosition(row: {
   };
 }
 
-
-export function settledRealizedPnl(options: {
-  localRealized: number;
-  remainingCost: number;
-  venueRealizedPnl: number | null;
-  claimAmount: number | null;
-  heldAtSettlement: boolean;
-}): number | null {
-  const venueRealized = options.venueRealizedPnl;
-  if (!options.heldAtSettlement) return venueRealized;
-
-  // Binance can expose a settled losing position with realizedPnl/pnl = 0
-  // while claimAmount is explicitly 0. In that case the venue value is not
-  // the actual economic result. Reconstruct the settlement leg from the
-  // amount that remained invested at expiry, while preserving any PnL that
-  // was already realized by earlier partial exits.
-  if (options.claimAmount != null && Number.isFinite(options.claimAmount)) {
-    const settlementDelta = options.claimAmount - Math.max(0, options.remainingCost);
-    if (venueRealized == null || Math.abs(venueRealized) < 1e-12) {
-      return options.localRealized + settlementDelta;
-    }
-  }
-
-  return venueRealized;
-}
-
 export function pickClaimTokenIds(ready: string[]): string[] {
   return [...new Set(ready.filter(Boolean))];
 }

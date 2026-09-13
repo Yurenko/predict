@@ -3,11 +3,10 @@ export const LIVE_MIN_ORDER_USDT = 1;
 export const LIVE_ENTER_USDT_BUFFER = 0.05;
 /** Ignore prediction-orderbook WS older than this when sizing EXIT — stale bid undersizes SELL. ENTER still uses the last book. */
 export const LIVE_BOOK_MAX_AGE_MS = 8_000;
-/** Residual LIVE inventory this small is treated as exchange dust after an EXIT order is terminal. */
-export const LIVE_EXIT_DUST_MAX_USDT = 0.01;
 
 export function isFreshLiveBook(dataAgeMs: number | null | undefined): boolean {
-  if (dataAgeMs == null || !Number.isFinite(dataAgeMs) || dataAgeMs < 0) return false;
+  if (dataAgeMs == null || !Number.isFinite(dataAgeMs) || dataAgeMs < 0)
+    return false;
   return dataAgeMs <= LIVE_BOOK_MAX_AGE_MS;
 }
 
@@ -73,9 +72,12 @@ export function liveFlattenNotional(options: {
   avgPrice: number;
   totalCost?: number;
 }): { shares: number; notional: number } {
-  const local = Number.isFinite(options.localShares) ? Math.max(0, options.localShares) : 0;
+  const local = Number.isFinite(options.localShares)
+    ? Math.max(0, options.localShares)
+    : 0;
   const venue =
-    options.venueTradableShares != null && Number.isFinite(options.venueTradableShares)
+    options.venueTradableShares != null &&
+    Number.isFinite(options.venueTradableShares)
       ? Math.max(0, options.venueTradableShares)
       : null;
   const shares = venue != null ? venue : local;
@@ -88,7 +90,10 @@ export function liveFlattenNotional(options: {
 }
 
 /** Binance rejects a SELL quote bigger than wallet inventory. */
-export function liveExitExceedsInventory(quotedUsdt: number, heldNotional: number): boolean {
+export function liveExitExceedsInventory(
+  quotedUsdt: number,
+  heldNotional: number,
+): boolean {
   if (!(quotedUsdt > 0) || !(heldNotional >= 0)) return false;
   return quotedUsdt > heldNotional * 1.02 + 1e-9;
 }
@@ -126,7 +131,9 @@ export function liveExitSellNotionals(options: {
   lastPrice: number | null;
   avgPrice: number;
 }): number[] {
-  const shares = Number.isFinite(options.shares) ? Math.max(0, options.shares) : 0;
+  const shares = Number.isFinite(options.shares)
+    ? Math.max(0, options.shares)
+    : 0;
   if (!(shares > 0)) return [];
   const aggressive = liveFlattenExitPrice({
     positionSide: "BUY",
@@ -173,15 +180,16 @@ export function canLiveEnterNotional(
 }
 
 /** USDT that sells exactly `shares` at this fill — never more, or FOK leftovers. */
-
-export function isLiveExitDust(shares: number, price: number | null | undefined): boolean {
-  if (!(shares > 0) || !Number.isFinite(shares)) return false;
-  if (price == null || !Number.isFinite(price) || !(price > 0)) return false;
-  return shares * price <= LIVE_EXIT_DUST_MAX_USDT + 1e-12;
-}
-
-export function liveExitCoverNotional(shares: number, fillPrice: number): number {
-  if (!(shares > 0) || !(fillPrice > 0) || !Number.isFinite(shares) || !Number.isFinite(fillPrice)) {
+export function liveExitCoverNotional(
+  shares: number,
+  fillPrice: number,
+): number {
+  if (
+    !(shares > 0) ||
+    !(fillPrice > 0) ||
+    !Number.isFinite(shares) ||
+    !Number.isFinite(fillPrice)
+  ) {
     return 0;
   }
   return shares * fillPrice;

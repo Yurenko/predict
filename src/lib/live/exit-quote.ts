@@ -31,9 +31,6 @@ export async function quoteLiveExitSell(options: {
     bestAsk: options.bestAsk,
     lastPrice: options.lastPrice,
     avgPrice: options.avgPrice,
-    // Keep the current executable bid as the LIMIT floor. Binance can still
-    // fill at a better price; any remainder is reconciled against venue
-    // inventory and retried separately.
     aggressive: false,
   });
   if (!(priceLimit > 0)) {

@@ -8,7 +8,6 @@ import { buildStrategyContext, clampObservedAt, rowsAtOrBefore } from "@/lib/bac
 import type { UnderlyingTick } from "@/lib/backtest/types";
 import { evaluateRisk } from "@/lib/risk/evaluate";
 import { limitsFromEnv } from "@/lib/risk/limits";
-import { isLiveExitDust } from "@/lib/live/notional";
 import { loadRiskState, persistRiskDecision } from "@/lib/risk/persist";
 import { createStrategy } from "@/lib/strategy";
 import { readLiveOrderbook } from "@/lib/ingest/raw-store";
@@ -47,7 +46,7 @@ import {
   isFreshLiveBook,
 } from "@/lib/live/notional";
 import { LIVE_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
-import { clearLiveFlatten, isLiveFlattening } from "@/lib/live/flatten";
+import { isLiveFlattening } from "@/lib/live/flatten";
 import {
   clearExpiredPendingFlips,
   clearPendingFlip,
@@ -205,37 +204,7 @@ async function retryLiveFlattening(
       avgPrice,
       slippageBps: limits.maxSlippageBps,
     });
-    if (exitQuote.belowMin || !exitQuote.quote) {
-      // Binance can leave a tiny residual after a terminal LIMIT fill because
-      // the executable share quantity is rounded/filled independently from
-      // our local position. Do not keep a 0.01-share position OPEN forever
-      // when the venue cannot quote a meaningful order for it. Mark it as
-      // exchange dust; settlement sync will account for it at market expiry.
-      const dustPrice = priced.bestBid ?? priced.lastPrice ?? asNumber(row.avgPrice) ?? null;
-      if (isLiveExitDust(shares, dustPrice)) {
-        const raw = clearLiveFlatten(row.rawPayload);
-        const dustNotional = shares * Math.max(0, dustPrice ?? 0);
-        await prisma.position.update({
-          where: { id: row.id },
-          data: {
-            status: "CLOSED",
-            closedAt: null,
-            rawPayload: {
-              ...(raw as Record<string, unknown>),
-              liveDust: true,
-              liveDustShares: shares,
-              liveDustNotional: dustNotional,
-              liveDustMarkedAt: new Date().toISOString(),
-            },
-          },
-        });
-        log.info(
-          { positionId: row.id, tokenId: row.tokenId, shares, dustNotional },
-          "live EXIT residual marked as exchange dust",
-        );
-      }
-      continue;
-    }
+    if (exitQuote.belowMin || !exitQuote.quote) continue;
 
     const now = new Date();
     const strategyId = row.strategy?.slug ?? "flatten-retry";
