@@ -1,4 +1,4 @@
-export const LIVE_MIN_ORDER_USDT = 1.5;
+export const LIVE_MIN_ORDER_USDT = 1;
 /** Extra USDT kept back so a $2 ticket does not bounce on dust/fees. */
 export const LIVE_ENTER_USDT_BUFFER = 0.05;
 /** Ignore prediction-orderbook WS older than this when sizing EXIT — stale bid undersizes SELL. ENTER still uses the last book. */
