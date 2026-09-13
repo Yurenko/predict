@@ -16,7 +16,6 @@ import {
   pickClaimTokenIds,
   pickSingleClaimToken,
   shouldClaimPosition,
-  settledRealizedPnl,
   stampClaimEligibleAt,
   type VenuePositionNumbers,
 } from "@/lib/live/claim";
@@ -234,15 +233,6 @@ async function overlayVenueNumbers(
     const bookClose = bookClosePrice(row.rawPayload);
     const settled = venue.expired === true;
     const localRealized = asNumber(row.realizedPnl) ?? 0;
-    const remainingCost = asNumber(row.totalCost) ?? 0;
-    const marketEndMs = row.market.topic.endDate?.getTime() ?? null;
-    const closedAtMs = row.closedAt?.getTime() ?? null;
-    // A row that was closed by an EXIT before the market ended must keep its
-    // trade PnL. Only a position that was still held at expiry is eligible
-    // for settlement PnL reconstruction.
-    const heldAtSettlement =
-      settled &&
-      (closedAtMs == null || marketEndMs == null || closedAtMs >= marketEndMs);
     let rowRealizedDelta = 0;
 
     if (venue.venuePositionId) data.venuePositionId = venue.venuePositionId;
@@ -250,24 +240,20 @@ async function overlayVenueNumbers(
     if (venue.tradableShares != null) extra.venueTradableShares = venue.tradableShares;
     if (venue.avgPrice != null) extra.venueAvgPrice = venue.avgPrice;
     if (venue.totalCost != null) extra.venueTotalCost = venue.totalCost;
-
-    const effectiveRealized = settledRealizedPnl({
-      localRealized,
-      remainingCost,
-      venueRealizedPnl: venue.realizedPnl,
-      claimAmount: venue.claimAmount,
-      heldAtSettlement,
-    });
-
-    if (effectiveRealized != null) {
-      extra.venueRealizedPnl = effectiveRealized;
-      rowRealizedDelta = effectiveRealized - localRealized;
-      data.realizedPnl = effectiveRealized;
-      if (heldAtSettlement && venue.claimAmount != null &&
-          (venue.realizedPnl == null || Math.abs(venue.realizedPnl) < 1e-12) &&
-          Math.abs(rowRealizedDelta) > 1e-12) {
-        extra.settlementRealizedPnl = effectiveRealized;
-        extra.settlementPnlSource = "claimAmount-minus-remaining-cost";
+    if (venue.realizedPnl != null) {
+      extra.venueRealizedPnl = venue.realizedPnl;
+      rowRealizedDelta = venue.realizedPnl - localRealized;
+      data.realizedPnl = venue.realizedPnl;
+    } else if (settled && venue.claimAmount != null) {
+      // Some settled losers do not expose realizedPnl, but Binance still
+      // exposes the settlement amount. Apply the settlement delta to the
+      // remaining local cost so a losing expiry is not silently recorded as 0.
+      const remainingCost = asNumber(row.totalCost) ?? 0;
+      const settlementDelta = venue.claimAmount - remainingCost;
+      if (Number.isFinite(settlementDelta)) {
+        data.realizedPnl = localRealized + settlementDelta;
+        extra.venueRealizedPnl = data.realizedPnl;
+        rowRealizedDelta = settlementDelta;
       }
     }
     if (venue.unrealizedPnl != null) extra.venueUnrealizedPnl = venue.unrealizedPnl;
@@ -452,11 +438,7 @@ async function loadVenuePositions(
   options: { includeEnded?: boolean } = {},
 ): Promise<Map<string, VenuePositionNumbers>> {
   const byToken = new Map<string, VenuePositionNumbers>();
-  // Only ONGOING/PENDING_CLAIM are needed during normal position sync.
-  // ENDED is loaded from settled-position history only when an explicit
-  // settlement/claim pass is required; otherwise an old ENDED row can
-  // overwrite a locally recorded trade result with a zero PnL value.
-  for (const tab of VENUE_POSITION_TABS.filter((value) => value !== "ENDED")) {
+  for (const tab of VENUE_POSITION_TABS) {
     try {
       const page = await venue.queryPositions({
         walletAddress: ctx.walletAddress,
@@ -543,30 +525,10 @@ export async function syncLivePositionsFromVenue(
     },
     select: { tokenId: true },
   });
-  // Also revisit CLOSED rows with zero realized PnL after market expiry.
-  // Losing settled positions can legitimately have claimAmount=0 while the
-  // venue's realizedPnl/pnl field is also reported as 0. The settled-history
-  // pass is needed to reconstruct the actual loss and persist it, otherwise a
-  // page refresh can show 0 forever. The closedAt guard avoids touching rows
-  // that were fully exited before expiry.
-  const zeroRealizedSettled = await prisma.position.findMany({
-    where: {
-      mode: TradingMode.LIVE,
-      status: PositionStatus.CLOSED,
-      realizedPnl: 0,
-      market: { topic: { endDate: { lte: now } } },
-    },
-    select: { id: true, tokenId: true, closedAt: true, market: { select: { topic: { select: { endDate: true } } } } },
-  });
-  const zeroRealizedAfterExpiry = zeroRealizedSettled.filter((row) => {
-    const end = row.market.topic.endDate?.getTime() ?? null;
-    const closed = row.closedAt?.getTime() ?? null;
-    return end != null && (closed == null || closed >= end);
-  });
   const byToken = await loadVenuePositions(
     venue,
     ctx,
-    { includeEnded: options.immediate === true || expiredOpen.length > 0 || zeroRealizedAfterExpiry.length > 0 },
+    { includeEnded: options.immediate === true || expiredOpen.length > 0 },
   );
   const recovered = await ensureVenueOpenRows(byToken);
   const overlay = await overlayVenueNumbers(byToken, now);

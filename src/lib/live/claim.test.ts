@@ -8,7 +8,6 @@ import {
   pickClaimTokenIds,
   pickSingleClaimToken,
   shouldClaimPosition,
-  settledRealizedPnl,
   stampClaimEligibleAt,
   parseClaimState,
 } from "./claim";
@@ -205,44 +204,5 @@ describe("mergeVenuePosition", () => {
     const merged = mergeVenuePosition(undefined, ongoing, "ONGOING");
     expect(merged.tradableShares).toBeCloseTo(11.64);
     expect(merged.expired).toBe(false);
-  });
-});
-
-
-describe("settledRealizedPnl", () => {
-  it("reconstructs a losing expiry when Binance reports realizedPnl=0 and claimAmount=0", () => {
-    expect(
-      settledRealizedPnl({
-        localRealized: 0,
-        remainingCost: 1,
-        venueRealizedPnl: 0,
-        claimAmount: 0,
-        heldAtSettlement: true,
-      }),
-    ).toBeCloseTo(-1);
-  });
-
-  it("preserves partial-exit PnL and subtracts only the remaining settlement cost", () => {
-    expect(
-      settledRealizedPnl({
-        localRealized: 0.17,
-        remainingCost: 0.01,
-        venueRealizedPnl: 0,
-        claimAmount: 0,
-        heldAtSettlement: true,
-      }),
-    ).toBeCloseTo(0.16);
-  });
-
-  it("does not overwrite a position closed before market expiry", () => {
-    expect(
-      settledRealizedPnl({
-        localRealized: 0.12,
-        remainingCost: 1,
-        venueRealizedPnl: 0,
-        claimAmount: 0,
-        heldAtSettlement: false,
-      }),
-    ).toBe(0);
   });
 });
