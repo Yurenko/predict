@@ -31,6 +31,7 @@ export interface VenuePositionNumbers {
   realizedPnl: number | null;
   unrealizedPnl: number | null;
   claimAmount: number | null;
+  settlementValue: number | null;
   canClaim: boolean;
   redeemStatus: string | null;
   closePrice: number | null;
@@ -174,6 +175,7 @@ export function mergeVenuePosition(
     canClaim: mapped.canClaim || pendingClaim || existing.canClaim,
     expired: mapped.expired || ended || existing.expired,
     claimAmount: mapped.claimAmount ?? existing.claimAmount,
+    settlementValue: mapped.settlementValue ?? existing.settlementValue,
     realizedPnl: mapped.realizedPnl ?? existing.realizedPnl,
     closePrice: mapped.closePrice ?? existing.closePrice,
     redeemStatus: mapped.redeemStatus ?? existing.redeemStatus,
@@ -190,6 +192,7 @@ export function mapVenuePosition(row: {
   unrealizedPnl?: string;
   pnl?: string;
   claimAmount?: string;
+  value?: string;
   canClaim?: boolean;
   redeemStatus?: string;
   currentPrice?: string;
@@ -198,12 +201,21 @@ export function mapVenuePosition(row: {
 }): VenuePositionNumbers {
   const shares = venueAmount(row.shares);
   const claimAmount = venueAmount(row.claimAmount);
+  const settlementValue = venueAmount(row.value) ?? claimAmount;
   const currentPrice = venueAmount(row.currentPrice);
   const closePrice =
     currentPrice ??
     (shares != null && shares > 0 && claimAmount != null ? claimAmount / shares : null);
-  const realized = venueAmount(row.realizedPnl) ?? venueAmount(row.pnl);
   const status = (row.positionStatus ?? row.redeemStatus ?? "").toUpperCase();
+  const settledLike = /ENDED|SETTLED|CLAIM|RESOLVED|EXPIRED/.test(status) ||
+    row.isWinner != null || row.canClaim === true || row.claimAmount != null;
+  // For settled history Binance exposes both `pnl` and `realizedPnl`. In
+  // losing settlements `realizedPnl` can be 0 while `pnl` contains the actual
+  // negative result. Prefer `pnl` for settled rows so a loser cannot be
+  // overwritten back to 0 on the next sync.
+  const realizedRaw = venueAmount(row.realizedPnl);
+  const pnl = venueAmount(row.pnl);
+  const realized = settledLike ? (pnl ?? realizedRaw) : (realizedRaw ?? pnl);
   const expired =
     row.isWinner != null ||
     row.canClaim === true ||
@@ -220,6 +232,7 @@ export function mapVenuePosition(row: {
     realizedPnl: realized,
     unrealizedPnl: venueAmount(row.unrealizedPnl),
     claimAmount,
+    settlementValue,
     canClaim: row.canClaim === true,
     redeemStatus: row.redeemStatus ?? null,
     closePrice,

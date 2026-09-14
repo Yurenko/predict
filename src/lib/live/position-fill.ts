@@ -5,8 +5,36 @@ import type { FillOk } from "@/lib/backtest/fills";
 export const LIVE_INFLIGHT_STATUSES: OrderStatus[] = [
   OrderStatus.PENDING,
   OrderStatus.SUBMITTED,
+];
+
+/** PAPER keeps PARTIALLY_FILLED because the simulator intentionally models partial fills. */
+export const PAPER_INFLIGHT_STATUSES: OrderStatus[] = [
+  OrderStatus.PENDING,
+  OrderStatus.SUBMITTED,
   OrderStatus.PARTIALLY_FILLED,
 ];
+
+/** A LIVE residual worth at most one cent is treated as dust for slot allocation. */
+export const LIVE_DUST_MAX_NOTIONAL_USDT = 0.01;
+
+export function isLiveDustPosition(row: {
+  rawPayload?: unknown;
+  shares: unknown;
+  avgPrice: unknown;
+}): boolean {
+  const raw =
+    row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
+      ? (row.rawPayload as Record<string, unknown>)
+      : {};
+  if (raw.liveDust === true) return true;
+  if (raw.liveFlatten !== true) return false;
+  const shares = Number(row.shares);
+  const avgPrice = Number(row.avgPrice);
+  if (!Number.isFinite(shares) || !Number.isFinite(avgPrice) || !(shares > 0) || !(avgPrice > 0)) {
+    return false;
+  }
+  return shares * avgPrice <= LIVE_DUST_MAX_NOTIONAL_USDT + 1e-9;
+}
 
 export interface LivePositionSnapshot {
   id?: string;

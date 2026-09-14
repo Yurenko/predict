@@ -206,3 +206,29 @@ describe("mergeVenuePosition", () => {
     expect(merged.expired).toBe(false);
   });
 });
+
+it("prefers Binance settled pnl when realizedPnl is zero for a loser", () => {
+  const mapped = mapVenuePosition({
+    tokenId: "loser",
+    shares: "0",
+    totalCost: "1.00",
+    realizedPnl: "0",
+    pnl: "-1.00",
+    positionStatus: "SETTLED",
+  });
+  expect(mapped.realizedPnl).toBeCloseTo(-1);
+});
+
+it("maps Binance settlement value separately from the historical pnl", () => {
+  const mapped = mapVenuePosition({
+    tokenId: "winner",
+    shares: "2",
+    totalCost: "1.00",
+    pnl: "0.20",
+    realizedPnl: "0",
+    value: "1.20",
+    positionStatus: "SETTLED",
+  });
+  expect(mapped.settlementValue).toBeCloseTo(1.2);
+  expect(mapped.realizedPnl).toBeCloseTo(0.2);
+});

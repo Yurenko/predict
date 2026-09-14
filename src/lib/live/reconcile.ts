@@ -37,20 +37,19 @@ function fillFromOfficial(row: OfficialOrder) {
   // Prefer the quantitative fill progress when it contradicts a generic
   // "OPEN"/"SUBMITTED" status. The venue's cumulative filled quantities are
   // the safest indicator of whether an execution actually happened.
+  // LIVE never persists PARTIALLY_FILLED. Binance reports cumulative fill
+  // progress, but a partially filled GTC order remains an active SUBMITTED
+  // order in our state machine. This keeps partial fills from becoming a
+  // blocking terminal/inflight state while still applying every fill delta.
   if (fillPct !== null && fillPct >= 1 && (shares ?? 0) > 0) {
     status = OrderStatus.FILLED;
-  } else if (
-    fillPct !== null &&
-    fillPct > 0 &&
-    fillPct < 1
-  ) {
-    status = OrderStatus.PARTIALLY_FILLED;
+  } else if (status === OrderStatus.PARTIALLY_FILLED) {
+    status = OrderStatus.SUBMITTED;
   } else if (
     status === OrderStatus.SUBMITTED &&
-    (shares ?? 0) > 0 &&
-    fillPct === null
+    (shares ?? 0) > 0
   ) {
-    status = OrderStatus.PARTIALLY_FILLED;
+    status = OrderStatus.SUBMITTED;
   }
   return {
     status,
@@ -262,6 +261,14 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<{ appl
       order.side,
     );
     const now = new Date();
+    const remainingNotional =
+      applied.status === PositionStatus.OPEN
+        ? Math.max(0, applied.position.shares * Math.max(fill.price, 0))
+        : 0;
+    const isDustResidual =
+      order.side !== "BUY" &&
+      applied.status === PositionStatus.OPEN &&
+      remainingNotional <= 0.01 + 1e-9;
 
     let positionId = open?.id ?? null;
     if (!open) {
@@ -346,6 +353,20 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<{ appl
         },
       },
     });
+
+    if (positionId && isDustResidual) {
+      const current = await tx.position.findUnique({ where: { id: positionId }, select: { rawPayload: true } });
+      await tx.position.update({
+        where: { id: positionId },
+        data: {
+          rawPayload: jsonPayload(current?.rawPayload, {
+            liveDust: true,
+            liveDustNotionalUsdt: remainingNotional,
+            liveDustMarkedAt: now.toISOString(),
+          }),
+        },
+      });
+    }
 
     if (positionId) {
       await tx.order.update({
@@ -445,6 +466,14 @@ export async function syncLiveOrdersFromVenue(
   },
   walletAddress: string,
 ): Promise<number> {
+  // Migrate any legacy LIVE PARTIALLY_FILLED rows to SUBMITTED before
+  // exposing them to slot/inflight checks. New LIVE reconciliation never writes
+  // this status; historical rows are normalized here as well.
+  await prisma.order.updateMany({
+    where: { mode: TradingMode.LIVE, status: OrderStatus.PARTIALLY_FILLED },
+    data: { status: OrderStatus.SUBMITTED, terminalAt: null },
+  });
+
   const [history, active] = await Promise.all([
     venue.queryOrderHistory({ walletAddress, limit: 50 }),
     venue.queryActiveOrders({ walletAddress, limit: 50 }),

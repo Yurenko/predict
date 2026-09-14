@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { OrderSide, OrderStatus } from "@prisma/client";
+import { mapOfficialOrderStatus } from "./status";
 import {
   applyLiveFillToPosition,
   completeOfficialFill,
+  isLiveDustPosition,
+  LIVE_INFLIGHT_STATUSES,
+  PAPER_INFLIGHT_STATUSES,
   reservedLivePositionCount,
   shouldDeferLiveEnter,
   type LivePositionSnapshot,
@@ -113,5 +117,30 @@ describe("applyLiveFillToPosition", () => {
     expect(next.position.shares).toBe(6);
     expect(next.position.avgPrice).toBe(0.5);
     expect(next.realizedDelta).toBeCloseTo(-0.18);
+  });
+});
+
+
+describe("LIVE partial order state", () => {
+  it("does not use PARTIALLY_FILLED as a LIVE inflight status", () => {
+    expect(LIVE_INFLIGHT_STATUSES.map(String)).not.toContain(OrderStatus.PARTIALLY_FILLED);
+    expect(PAPER_INFLIGHT_STATUSES.map(String)).toContain(OrderStatus.PARTIALLY_FILLED);
+  });
+
+  it("treats a one-cent flatten residual as dust without closing the position", () => {
+    expect(
+      isLiveDustPosition({
+        rawPayload: { liveFlatten: true },
+        shares: 0.02,
+        avgPrice: 0.5,
+      }),
+    ).toBe(true);
+  });
+});
+
+
+describe("mapOfficialOrderStatus", () => {
+  it("treats Binance CLOSED order history rows as FILLED", () => {
+    expect(mapOfficialOrderStatus("CLOSED")).toBe(OrderStatus.FILLED);
   });
 });

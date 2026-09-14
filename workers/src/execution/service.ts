@@ -39,7 +39,7 @@ import { flattenExpiredPaperPositions } from "@/lib/paper/expiry";
 import { invertBinaryBook, resolveBinaryWorkerTrade } from "@/lib/live/binary";
 import { liveOppositeCloses } from "@/lib/live/binary-mode";
 import { outcomeIsDownToken } from "@/lib/normalize/markets";
-import { LIVE_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
+import { PAPER_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
 import {
   clearExpiredPendingFlips,
   clearPendingFlip,
@@ -92,7 +92,7 @@ async function paperSlotUsage(): Promise<{ reserved: number; openAndInflight: nu
       select: { tokenId: true, marketId: true, strategyId: true },
     }),
     prisma.order.findMany({
-      where: { mode: TradingMode.PAPER, status: { in: LIVE_INFLIGHT_STATUSES } },
+      where: { mode: TradingMode.PAPER, status: { in: PAPER_INFLIGHT_STATUSES } },
       select: { tokenId: true, marketId: true, signal: { select: { strategyId: true } } },
     }),
     listPendingFlips(),
@@ -538,7 +538,7 @@ export async function runPaperOnce(): Promise<{
           mode: TradingMode.PAPER,
           marketId: market.id,
           tokenId: trade.tokenId,
-          status: { in: LIVE_INFLIGHT_STATUSES },
+          status: { in: PAPER_INFLIGHT_STATUSES },
           signal: { strategyId: row.id },
         },
         select: { id: true },
@@ -550,7 +550,7 @@ export async function runPaperOnce(): Promise<{
           where: {
             mode: TradingMode.PAPER,
             marketId: market.id,
-            status: { in: LIVE_INFLIGHT_STATUSES },
+            status: { in: PAPER_INFLIGHT_STATUSES },
             signal: { strategyId: row.id },
           },
           select: { id: true },
@@ -577,7 +577,7 @@ export async function runPaperOnce(): Promise<{
             where: {
               mode: TradingMode.PAPER,
               marketId: market.id,
-              status: { in: LIVE_INFLIGHT_STATUSES },
+              status: { in: PAPER_INFLIGHT_STATUSES },
               signal: { strategyId: { not: row.id } },
             },
             select: { id: true },

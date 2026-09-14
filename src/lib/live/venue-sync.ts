@@ -51,6 +51,11 @@ function bookClosePrice(raw: unknown): number | null {
   return asNumber((raw as { closePrice: unknown }).closePrice);
 }
 
+function settlementReadyAt(endDate: Date | null | undefined, fallback: Date): Date {
+  const base = endDate ?? fallback;
+  return new Date(base.getTime() + LIVE_CLAIM_DELAY_MS);
+}
+
 function addVenueRows(
   byToken: Map<string, VenuePositionNumbers>,
   rows:
@@ -215,6 +220,7 @@ async function overlayVenueNumbers(
   const rows = await prisma.position.findMany({
     where: { mode: TradingMode.LIVE, tokenId: { in: [...byToken.keys()] } },
     orderBy: { openedAt: "desc" },
+    include: { market: { select: { topic: { select: { endDate: true } } } } },
   });
   const seen = new Set<string>();
   let updated = 0;
@@ -232,29 +238,54 @@ async function overlayVenueNumbers(
         : {};
     const bookClose = bookClosePrice(row.rawPayload);
     const settled = venue.expired === true;
+    const rawExpired = extra.expired === true;
+    const closedBeforeExpiry =
+      row.status === PositionStatus.CLOSED &&
+      row.closedAt != null &&
+      row.market.topic.endDate != null &&
+      row.closedAt.getTime() < row.market.topic.endDate.getTime();
+    // A position that was fully exited before market expiry must keep its
+    // execution PnL. Settled-history PnL belongs to the unresolved venue
+    // position and must not overwrite a pre-expiry local close.
+    const settlementRelevant = !closedBeforeExpiry || rawExpired;
+    const settlementReady =
+      !settled ||
+      now.getTime() >= settlementReadyAt(row.market.topic.endDate, row.closedAt ?? now).getTime();
     const localRealized = asNumber(row.realizedPnl) ?? 0;
     let rowRealizedDelta = 0;
 
     if (venue.venuePositionId) data.venuePositionId = venue.venuePositionId;
     if (venue.claimAmount != null) extra.claimAmount = venue.claimAmount;
+    if (venue.settlementValue != null) extra.venueSettlementValue = venue.settlementValue;
     if (venue.tradableShares != null) extra.venueTradableShares = venue.tradableShares;
     if (venue.avgPrice != null) extra.venueAvgPrice = venue.avgPrice;
     if (venue.totalCost != null) extra.venueTotalCost = venue.totalCost;
-    if (venue.realizedPnl != null) {
+    if (settled && settlementRelevant && settlementReady) {
+      // Settlement PnL is an incremental close of the remaining inventory.
+      // Use Binance's settlement value (0 for a loser) against the remaining
+      // local cost, then add it to the PnL already realized by earlier SELLs.
+      // This avoids both the old `0` loser bug and double-counting a partial
+      // EXIT when Binance's historical `pnl` is position-level.
+      const remainingCost = asNumber(row.totalCost) ?? 0;
+      const settlementValue = venue.settlementValue ?? venue.claimAmount;
+      if (settlementValue != null && Number.isFinite(remainingCost)) {
+        const settlementDelta = settlementValue - remainingCost;
+        if (Number.isFinite(settlementDelta)) {
+          rowRealizedDelta = settlementDelta;
+          data.realizedPnl = localRealized + settlementDelta;
+          extra.venueSettlementValue = settlementValue;
+          extra.venueSettlementDelta = settlementDelta;
+        }
+      } else if (venue.realizedPnl != null) {
+        // Fallback for a venue response that has no settlement value.
+        rowRealizedDelta = venue.realizedPnl - localRealized;
+        data.realizedPnl = venue.realizedPnl;
+      }
+      if (venue.realizedPnl != null) extra.venueRealizedPnl = venue.realizedPnl;
+    } else if (venue.realizedPnl != null && !settled) {
       extra.venueRealizedPnl = venue.realizedPnl;
       rowRealizedDelta = venue.realizedPnl - localRealized;
       data.realizedPnl = venue.realizedPnl;
-    } else if (settled && venue.claimAmount != null) {
-      // Some settled losers do not expose realizedPnl, but Binance still
-      // exposes the settlement amount. Apply the settlement delta to the
-      // remaining local cost so a losing expiry is not silently recorded as 0.
-      const remainingCost = asNumber(row.totalCost) ?? 0;
-      const settlementDelta = venue.claimAmount - remainingCost;
-      if (Number.isFinite(settlementDelta)) {
-        data.realizedPnl = localRealized + settlementDelta;
-        extra.venueRealizedPnl = data.realizedPnl;
-        rowRealizedDelta = settlementDelta;
-      }
     }
     if (venue.unrealizedPnl != null) extra.venueUnrealizedPnl = venue.unrealizedPnl;
 
@@ -268,6 +299,8 @@ async function overlayVenueNumbers(
     if (row.status === PositionStatus.OPEN && settled) {
       data.status = PositionStatus.CLOSED;
       data.closedAt = row.closedAt ?? now;
+      extra.settlementReadyAt = settlementReadyAt(row.market.topic.endDate, row.closedAt ?? now).toISOString();
+      extra.settlementReady = settlementReady;
       if (venue.closePrice != null && (bookClose == null || bookClose <= 0)) {
         extra.closePrice = venue.closePrice;
       }
@@ -277,7 +310,11 @@ async function overlayVenueNumbers(
       if (settled && venue.closePrice != null && (bookClose == null || extra.expired === true)) {
         extra.closePrice = venue.closePrice;
       }
-      if (settled) Object.assign(extra, clearLiveFlatten(extra));
+      if (settled) {
+        extra.settlementReadyAt = settlementReadyAt(row.market.topic.endDate, row.closedAt ?? now).toISOString();
+        extra.settlementReady = settlementReady;
+        Object.assign(extra, clearLiveFlatten(extra));
+      }
       data.rawPayload = payload(extra);
     } else if (venue.claimAmount != null) {
       data.rawPayload = payload(extra);

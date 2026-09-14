@@ -45,7 +45,7 @@ import {
   clipLiveOrderNotional,
   isFreshLiveBook,
 } from "@/lib/live/notional";
-import { LIVE_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
+import { isLiveDustPosition, LIVE_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
 import { isLiveFlattening } from "@/lib/live/flatten";
 import {
   clearExpiredPendingFlips,
@@ -267,18 +267,46 @@ async function liveSlotUsage(): Promise<{ reserved: number; openAndInflight: num
   const [open, inflight, pendings] = await Promise.all([
     prisma.position.findMany({
       where: { mode: TradingMode.LIVE, status: "OPEN" },
-      select: { tokenId: true, marketId: true, strategyId: true },
+      select: { tokenId: true, marketId: true, strategyId: true, rawPayload: true, shares: true, avgPrice: true },
     }),
     prisma.order.findMany({
       where: { mode: TradingMode.LIVE, status: { in: LIVE_INFLIGHT_STATUSES } },
-      select: { tokenId: true, marketId: true, signal: { select: { strategyId: true } } },
+      select: {
+        tokenId: true,
+        marketId: true,
+        rawPayload: true,
+        signal: { select: { strategyId: true } },
+      },
     }),
     listPendingFlips(),
   ]);
-  const openKeys = new Set(open.map((row) => `${row.strategyId}:${row.marketId}`));
-  const openTokens = new Set(open.map((row) => row.tokenId).filter(Boolean));
+
+  // One tiny residual (<= $0.01) is kept as an OPEN cleanup position, but it
+  // does not consume the user's normal MAX_SIMULTANEOUS_POSITIONS capacity.
+  // If multiple dust rows accumulate, only the first gets the free cleanup
+  // slot; additional dust rows count normally.
+  const dustOpen = open.filter((row) =>
+    isLiveDustPosition({
+      rawPayload: row.rawPayload,
+      shares: row.shares,
+      avgPrice: row.avgPrice,
+    }),
+  );
+  const normalOpen = open.filter((row) => !dustOpen.includes(row));
+  const extraDustSlots = Math.max(0, dustOpen.length - 1);
+
+  const openKeys = new Set(normalOpen.map((row) => `${row.strategyId}:${row.marketId}`));
+  const openTokens = new Set(normalOpen.map((row) => row.tokenId).filter(Boolean));
+  const inflightEnter = inflight.filter((row) => {
+    const raw =
+      row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
+        ? (row.rawPayload as Record<string, unknown>)
+        : {};
+    const action = raw.action;
+    return action == null || action === "ENTER";
+  });
   const inflightEnterKeys = new Set(
-    inflight
+    inflightEnter
       .filter((row) => row.tokenId && !openTokens.has(row.tokenId))
       .map((row) => `${row.signal?.strategyId ?? ""}:${row.marketId}`),
   );
@@ -294,11 +322,12 @@ async function liveSlotUsage(): Promise<{ reserved: number; openAndInflight: num
       pendingUncovered += 1;
     }
   }
-  const tokens = open.map((row) => row.tokenId);
-  const inflightTokens = inflight.map((row) => row.tokenId);
+  const tokens = normalOpen.map((row) => row.tokenId);
+  const inflightTokens = inflightEnter.map((row) => row.tokenId);
+  const base = reservedLivePositionCount(tokens, inflightTokens, pendingUncovered);
   return {
-    openAndInflight: reservedLivePositionCount(tokens, inflightTokens, 0),
-    reserved: reservedLivePositionCount(tokens, inflightTokens, pendingUncovered),
+    openAndInflight: base + extraDustSlots,
+    reserved: base + extraDustSlots,
   };
 }
 
@@ -521,10 +550,15 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         },
         include: { outcome: { select: { name: true } } },
       });
+      // A <= $0.01 cleanup residual stays visible/open for settlement, but it
+      // must not block a fresh signal or a binary flip.
+      const tradableOpens = opens.filter(
+        (item) => !isLiveDustPosition({ rawPayload: item.rawPayload, shares: item.shares, avgPrice: item.avgPrice }),
+      );
       const openUp =
-        opens.find((item) => !outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
+        tradableOpens.find((item) => !outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
       const openDown =
-        opens.find((item) => outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
+        tradableOpens.find((item) => outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
       const trade = resolveBinaryWorkerTrade({
         direction: actingSignal.direction,
         hasOpenUp: Boolean(openUp),
@@ -610,7 +644,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
               marketId: market.id,
               NOT: { strategyId: row.id },
             },
-            select: { id: true },
+            select: { id: true, rawPayload: true, shares: true, avgPrice: true },
           }),
           prisma.order.findFirst({
             where: {
@@ -624,7 +658,15 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           hasPeerPendingFlip(market.id, row.id),
         ]);
         if (
-          shouldSkipPeerEnter("single", "ENTER", Boolean(peerOpen || peerInflight || peerPending))
+          shouldSkipPeerEnter(
+            "single",
+            "ENTER",
+            Boolean(
+              (peerOpen && !isLiveDustPosition({ rawPayload: peerOpen.rawPayload, shares: peerOpen.shares, avgPrice: peerOpen.avgPrice })) ||
+                peerInflight ||
+                peerPending,
+            ),
+          )
         ) {
           skips.peer += 1;
           continue;
@@ -879,8 +921,18 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
   scheduleLiveClaim(venue, ctx);
 
   const open = await countOpenLivePositions();
+  const slotUsage = await liveSlotUsage();
   log.info(
-    { enabled: enabled.length, considered, submitted, open, binaryMode, fundingSource: "MPC", ...skips },
+    {
+      enabled: enabled.length,
+      considered,
+      submitted,
+      open,
+      reservedSlots: slotUsage.reserved,
+      binaryMode,
+      fundingSource: "MPC",
+      ...skips,
+    },
     "live cycle complete",
   );
   return { enabled: enabled.length, considered, submitted, open };
