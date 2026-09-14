@@ -24,6 +24,7 @@ import { asNumber } from "@/lib/normalize/numbers";
 import { limitsFromEnv } from "@/lib/risk/limits";
 import { loadRiskState, persistRiskSnapshot } from "@/lib/risk/persist";
 import { recordClosedTrade } from "@/lib/risk/state";
+import { calculateLiveRealizedPnl } from "@/lib/live/realized-pnl";
 
 const log = childLogger({ component: "live-venue-sync" });
 
@@ -220,7 +221,20 @@ async function overlayVenueNumbers(
   const rows = await prisma.position.findMany({
     where: { mode: TradingMode.LIVE, tokenId: { in: [...byToken.keys()] } },
     orderBy: { openedAt: "desc" },
-    include: { market: { select: { topic: { select: { endDate: true } } } } },
+    include: {
+      market: { select: { topic: { select: { endDate: true } } } },
+      executions: {
+        orderBy: { executedAt: "asc" },
+        include: {
+          order: {
+            select: {
+              side: true,
+              fees: { select: { amount: true } },
+            },
+          },
+        },
+      },
+    },
   });
   const seen = new Set<string>();
   let updated = 0;
@@ -260,32 +274,34 @@ async function overlayVenueNumbers(
     if (venue.tradableShares != null) extra.venueTradableShares = venue.tradableShares;
     if (venue.avgPrice != null) extra.venueAvgPrice = venue.avgPrice;
     if (venue.totalCost != null) extra.venueTotalCost = venue.totalCost;
-    if (settled && settlementRelevant && settlementReady) {
-      // Settlement PnL is an incremental close of the remaining inventory.
-      // Use Binance's settlement value (0 for a loser) against the remaining
-      // local cost, then add it to the PnL already realized by earlier SELLs.
-      // This avoids both the old `0` loser bug and double-counting a partial
-      // EXIT when Binance's historical `pnl` is position-level.
-      const remainingCost = asNumber(row.totalCost) ?? 0;
+    const canonicalSettlementReady = settled && settlementRelevant && settlementReady;
+    const canonicalRealized = calculateLiveRealizedPnl(
+      {
+        executions: row.executions,
+        rawPayload: row.rawPayload,
+        closedAt: row.closedAt,
+        endDate: row.market.topic.endDate,
+      },
+      {
+        includeSettlement: canonicalSettlementReady,
+        settlementValue: venue.settlementValue ?? venue.claimAmount,
+      },
+    );
+
+    // Rebuild the cached DB value from executions + one settlement leg. This
+    // is deliberately idempotent: polling the same Binance settled position
+    // again must write the same number, not add the settlement delta again.
+    if (Number.isFinite(canonicalRealized) && Math.abs(canonicalRealized - localRealized) > 1e-10) {
+      data.realizedPnl = canonicalRealized;
+      rowRealizedDelta = canonicalRealized - localRealized;
+    }
+    if (venue.realizedPnl != null) extra.venueRealizedPnl = venue.realizedPnl;
+    if (canonicalSettlementReady) {
       const settlementValue = venue.settlementValue ?? venue.claimAmount;
-      if (settlementValue != null && Number.isFinite(remainingCost)) {
-        const settlementDelta = settlementValue - remainingCost;
-        if (Number.isFinite(settlementDelta)) {
-          rowRealizedDelta = settlementDelta;
-          data.realizedPnl = localRealized + settlementDelta;
-          extra.venueSettlementValue = settlementValue;
-          extra.venueSettlementDelta = settlementDelta;
-        }
-      } else if (venue.realizedPnl != null) {
-        // Fallback for a venue response that has no settlement value.
-        rowRealizedDelta = venue.realizedPnl - localRealized;
-        data.realizedPnl = venue.realizedPnl;
+      if (settlementValue != null) {
+        extra.venueSettlementValue = settlementValue;
+        extra.liveSettlementApplied = true;
       }
-      if (venue.realizedPnl != null) extra.venueRealizedPnl = venue.realizedPnl;
-    } else if (venue.realizedPnl != null && !settled) {
-      extra.venueRealizedPnl = venue.realizedPnl;
-      rowRealizedDelta = venue.realizedPnl - localRealized;
-      data.realizedPnl = venue.realizedPnl;
     }
     if (venue.unrealizedPnl != null) extra.venueUnrealizedPnl = venue.unrealizedPnl;
 
@@ -340,6 +356,79 @@ async function overlayVenueNumbers(
     }
   }
   return { updated, realizedDelta };
+}
+
+
+async function canonicalizeLiveRealizedCache(now: Date): Promise<{ changed: number; realizedDelta: number }> {
+  const rows = await prisma.position.findMany({
+    where: { mode: TradingMode.LIVE },
+    include: {
+      market: { select: { topic: { select: { endDate: true } } } },
+      executions: {
+        orderBy: { executedAt: "asc" },
+        include: {
+          order: {
+            select: {
+              side: true,
+              fees: { select: { amount: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  let changed = 0;
+  let realizedDelta = 0;
+  for (const row of rows) {
+    const raw =
+      row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
+        ? (row.rawPayload as Record<string, unknown>)
+        : {};
+    const expired = raw.expired === true || raw.venueSettlementValue != null || raw.claimAmount != null;
+    const readyAt = raw.settlementReadyAt != null ? Date.parse(String(raw.settlementReadyAt)) : NaN;
+    const settlementReady =
+      expired &&
+      ((Number.isFinite(readyAt) && now.getTime() >= readyAt) ||
+        (row.closedAt != null &&
+          row.market.topic.endDate != null &&
+          row.closedAt.getTime() >= row.market.topic.endDate.getTime() + LIVE_CLAIM_DELAY_MS));
+
+    const canonical = calculateLiveRealizedPnl(
+      {
+        executions: row.executions,
+        rawPayload: row.rawPayload,
+        closedAt: row.closedAt,
+        endDate: row.market.topic.endDate,
+      },
+      {
+        includeSettlement: settlementReady,
+      },
+    );
+    const current = asNumber(row.realizedPnl) ?? 0;
+    if (!Number.isFinite(canonical) || Math.abs(canonical - current) <= 1e-10) continue;
+
+    const nextRaw = {
+      ...raw,
+      livePnlCanonicalizedAt: now.toISOString(),
+      livePnlCanonical: canonical,
+      ...(settlementReady ? { liveSettlementApplied: true } : {}),
+    };
+    await prisma.position.update({
+      where: { id: row.id },
+      data: {
+        realizedPnl: canonical,
+        rawPayload: payload(nextRaw),
+      },
+    });
+    changed += 1;
+    realizedDelta += canonical - current;
+    log.info(
+      { positionId: row.id, previous: current, canonical, settlementReady },
+      "LIVE realized PnL cache canonicalized",
+    );
+  }
+  return { changed, realizedDelta };
 }
 
 async function refreshPendingRedeems(
@@ -569,7 +658,11 @@ export async function syncLivePositionsFromVenue(
   );
   const recovered = await ensureVenueOpenRows(byToken);
   const overlay = await overlayVenueNumbers(byToken, now);
-  await persistVenueRealizedDelta(overlay.realizedDelta, now);
+  const canonicalized = await canonicalizeLiveRealizedCache(now);
+  if (canonicalized.changed > 0) {
+    log.info({ canonicalized: canonicalized.changed }, "LIVE realized PnL cache repaired");
+  }
+  await persistVenueRealizedDelta(overlay.realizedDelta + canonicalized.realizedDelta, now);
   await stampExpiredClaimTimers(now);
   if (options.claim === false && options.immediate !== true) {
     return { updated: overlay.updated + recovered, claimed: 0 };
@@ -589,7 +682,11 @@ export async function claimLiveWinnings(
   await stampExpiredClaimTimers(now);
   const byToken = await loadVenuePositions(venue, ctx, { includeEnded: true });
   const overlay = await overlayVenueNumbers(byToken, now);
-  await persistVenueRealizedDelta(overlay.realizedDelta, now);
+  const canonicalized = await canonicalizeLiveRealizedCache(now);
+  if (canonicalized.changed > 0) {
+    log.info({ canonicalized: canonicalized.changed }, "LIVE realized PnL cache repaired");
+  }
+  await persistVenueRealizedDelta(overlay.realizedDelta + canonicalized.realizedDelta, now);
   await refreshPendingRedeems(venue, ctx.walletAddress);
   const claimed = await redeemEligible(venue, ctx, byToken, now, options.immediate === true);
   return { claimed };

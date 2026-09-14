@@ -1,3 +1,4 @@
+import { TradingMode } from "@prisma/client";
 import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { prisma } from "@/lib/db/prisma";
 import { redis } from "@/lib/db/redis";
@@ -24,6 +25,7 @@ import { recordAccount, readRecordControl } from "@/lib/record/control";
 import { isPidAlive } from "@/lib/record/types";
 import { CURRENT_PHASE } from "@/lib/types/domain";
 import { parseClaimState } from "@/lib/live/claim";
+import { calculateLiveRealizedPnl, liveSettlementReady, type LiveRealizedPosition } from "@/lib/live/realized-pnl";
 import { LEDGER_PAGE_SIZE, ledgerPageCount, ledgerSkip } from "@/lib/dashboard/pages";
 import type {
   DashboardBacktest,
@@ -49,7 +51,17 @@ const positionInclude = {
   },
   strategy: true,
   outcome: { select: { name: true } },
-  executions: { orderBy: { executedAt: "desc" as const }, take: 8 },
+  executions: {
+    orderBy: { executedAt: "asc" as const },
+    include: {
+      order: {
+        select: {
+          side: true,
+          fees: { select: { kind: true, amount: true } },
+        },
+      },
+    },
+  },
 } as const;
 
 function iso(value: Date | null | undefined): string | null {
@@ -167,6 +179,13 @@ function orderPayloadField(raw: unknown, key: "reason" | "intent" | "action"): s
   }
   return null;
 }
+
+
+type LivePnlRow = LiveRealizedPosition & {
+  id: string;
+  status: string;
+  market: { topic: { endDate: Date | null } };
+};
 
 export async function loadDashboard(options: DashboardLoadOptions = {}): Promise<DashboardPayload> {
   const payload = emptyDashboard();
@@ -291,6 +310,49 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       }),
     ]);
 
+    const livePnlRows: LivePnlRow[] = payload.tradingMode === "LIVE"
+      ? await prisma.position.findMany({
+          where: { mode: TradingMode.LIVE },
+          select: {
+            id: true,
+            status: true,
+            shares: true,
+            rawPayload: true,
+            closedAt: true,
+            market: { select: { topic: { select: { endDate: true } } } },
+            executions: {
+              orderBy: { executedAt: "asc" },
+              include: {
+                order: {
+                  select: {
+                    side: true,
+                    fees: { select: { kind: true, amount: true } },
+                  },
+                },
+              },
+            },
+          },
+        })
+      : [];
+    const canonicalLivePnl = new Map(
+      livePnlRows.map((row) => [
+        row.id,
+        calculateLiveRealizedPnl(row, {
+          includeSettlement: liveSettlementReady({
+            rawPayload: row.rawPayload,
+            closedAt: row.closedAt,
+            endDate: row.market.topic.endDate,
+            now: new Date(),
+          }),
+        }),
+      ]),
+    );
+    const canonicalLiveClosedPnl = livePnlRows
+      .filter((row) => row.status !== "OPEN")
+      .reduce((sum, row) => sum + (canonicalLivePnl.get(row.id) ?? 0), 0);
+    const canonicalLiveTotalPnl = livePnlRows
+      .reduce((sum, row) => sum + (canonicalLivePnl.get(row.id) ?? 0), 0);
+
     const positionsPage = Math.min(requested.positionsPage, ledgerPageCount(closedCount, pageSize));
     const ordersPage = Math.min(requested.ordersPage, ledgerPageCount(orderCount, pageSize));
     const signalsPage = Math.min(requested.signalsPage, ledgerPageCount(signalCount, pageSize));
@@ -322,7 +384,10 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       closedPositions: closedCount,
       orders: orderCount,
       signals: signalCount,
-      closedRealized: asNumber(closedRealizedAgg._sum.realizedPnl) ?? 0,
+      closedRealized:
+        payload.tradingMode === "LIVE"
+          ? canonicalLiveClosedPnl
+          : asNumber(closedRealizedAgg._sum.realizedPnl) ?? 0,
       pages: {
         positions: { page: positionsPage, pageSize, total: closedCount },
         orders: { page: ordersPage, pageSize, total: orderCount },
@@ -381,7 +446,10 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
         shares,
         avgPrice: avg,
         totalCost: asNumber(row.totalCost) ?? 0,
-        realizedPnl: asNumber(row.realizedPnl) ?? 0,
+        realizedPnl:
+          payload.tradingMode === "LIVE"
+            ? (canonicalLivePnl.get(row.id) ?? 0)
+            : asNumber(row.realizedPnl) ?? 0,
         mark: open ? marked.mark : null,
         markSource: open ? marked.source : "none",
         markHeld: false,
@@ -402,7 +470,10 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
     // The RiskState is a safety snapshot and can lag one reconciliation tick.
     // For the dashboard/equity curve use the trading ledger as the source of
     // truth, including realized PnL from partially closed OPEN positions.
-    const ledgerRealized = asNumber(ledgerRealizedAgg._sum.realizedPnl) ?? 0;
+    const ledgerRealized =
+      payload.tradingMode === "LIVE"
+        ? canonicalLiveTotalPnl
+        : asNumber(ledgerRealizedAgg._sum.realizedPnl) ?? 0;
     const ledgerRealizedEquity = payload.limits.bankrollUsdt + ledgerRealized;
     payload.risk.realizedEquity = ledgerRealizedEquity;
     payload.risk.equity = ledgerRealizedEquity;
@@ -415,10 +486,18 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       bankroll: payload.limits.bankrollUsdt,
       now: new Date(),
       mtmEquity: payload.risk.mtmEquity,
-      closed: closedCurveRows.map((row) => ({
-        at: row.closedAt ?? row.openedAt,
-        pnl: asNumber(row.realizedPnl) ?? 0,
-      })),
+      closed:
+        payload.tradingMode === "LIVE"
+          ? livePnlRows
+              .filter((row) => row.status !== "OPEN")
+              .map((row) => ({
+                at: row.closedAt ?? new Date(),
+                pnl: canonicalLivePnl.get(row.id) ?? 0,
+              }))
+          : closedCurveRows.map((row) => ({
+              at: row.closedAt ?? row.openedAt,
+              pnl: asNumber(row.realizedPnl) ?? 0,
+            })),
     });
 
     payload.orders = orders.map((row): DashboardOrder => ({
