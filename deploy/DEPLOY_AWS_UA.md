@@ -204,6 +204,12 @@ MAX_POSITION_PCT=5
 MAX_SIMULTANEOUS_POSITIONS=3
 
 RAW_DATA_DIR=/home/ubuntu/predict/data/raw
+# PostgreSQL is the primary ingest store. Do not mirror every tick to local disk.
+RAW_FILE_PERSIST_MODE=fallback
+RAW_FILE_MAX_TOTAL_BYTES=536870912
+RAW_FILE_RETENTION_DAYS=2
+RAW_FILE_CLEANUP_INTERVAL_MS=900000
+RAW_FILE_MIN_FREE_BYTES=2147483648
 LOG_LEVEL=info
 ```
 
@@ -243,6 +249,36 @@ sudo systemctl status predict-web
 ```
 
 Має бути `active (running)`. Логи: `journalctl -u predict-web -f`.
+
+### Захист диска від логів і raw-даних
+
+`data/raw` **не є постійним архівом** у production. PostgreSQL — основне сховище `RawIngestEvent`; JSONL використовується лише як аварійний fallback, коли PostgreSQL недоступний. За замовчуванням fallback обмежений **512 MB**, зберігається максимум **2 дні**, а запис блокується, якщо на root-диску менше **2 GB** вільного місця. Це важливо: collector не повинен заповнювати диск саме тоді, коли PostgreSQL уже має проблеми.
+
+Після оновлення коду зробіть один раз cleanup старого raw-кешу:
+
+```bash
+cd ~/predict
+# запуск maintenance через уже зібраний застосунок відбудеться при старті record loop
+sudo du -xhd1 data | sort -h
+```
+
+Окремо обмежте systemd journal, бо `journalctl` теж знаходиться на тому самому root-диску:
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/predict-disk.conf >/dev/null <<'EOF'
+[Journal]
+SystemMaxUse=512M
+SystemKeepFree=4G
+RuntimeMaxUse=128M
+MaxRetentionSec=14day
+EOF
+sudo systemctl restart systemd-journald
+sudo journalctl --vacuum-size=512M
+sudo journalctl --disk-usage
+```
+
+Це не впливає на торгову логіку — лише гарантує, що diagnostic logs і raw fallback не з'їдять весь EC2 root disk.
 
 У браузері з вашого IP: `http://ВАШ_IP:3000` → стратегії → **Старт**.
 

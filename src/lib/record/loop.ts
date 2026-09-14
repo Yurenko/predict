@@ -17,6 +17,7 @@ import { writePaperCycle } from "@/lib/paper/cycle";
 import { isPidAlive } from "@/lib/record/types";
 import { sleep } from "@/lib/binance/rate-limit";
 import { syncLiveOrdersFromVenue, syncLivePositionsFromVenue } from "@/lib/live";
+import { maintainRawData } from "@/lib/ingest/raw-store";
 
 const log = childLogger({ component: "record-loop" });
 
@@ -109,6 +110,8 @@ async function runSessionCycle(): Promise<void> {
 export async function runRecordLoop(options: { exitOnSignal?: boolean } = {}): Promise<void> {
   const exitOnSignal = options.exitOnSignal !== false;
   const live = isLiveTradingEnabled();
+  await maintainRawData(true);
+
   log.info(
     { pid: process.pid, liveTradingEnabled: live, exitOnSignal },
     live

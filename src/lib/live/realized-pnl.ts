@@ -97,7 +97,18 @@ export function liveSettlementReady(row: {
   const now = row.now ?? new Date();
   const delayMs = row.delayMs ?? 60_000;
   const rawReadyAt = rawNumber(row.rawPayload, "settlementReadyAt");
-  if (rawReadyAt != null && now.getTime() >= rawReadyAt) return true;
+  const settlementValue =
+    rawNumber(row.rawPayload, "venueSettlementValue") ??
+    rawNumber(row.rawPayload, "claimAmount");
+  const settlementApplied = rawBool(row.rawPayload, "liveSettlementApplied");
+
+  // Expiry + one minute is only a time gate. It is NOT proof that Binance has
+  // returned the settlement for this exact position. Without an actual venue
+  // settlement value (including zero for a loser), falling back to settlement
+  // here would subtract the whole remaining cost from an otherwise correctly
+  // closed SELL and turn a profitable exit into a false loss.
+  if (settlementValue == null && !settlementApplied) return false;
+  if (rawReadyAt != null) return now.getTime() >= rawReadyAt;
   if (row.closedAt == null || row.endDate == null) return false;
   return row.closedAt.getTime() >= row.endDate.getTime() &&
     now.getTime() >= row.endDate.getTime() + delayMs;

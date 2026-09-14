@@ -24,7 +24,7 @@ import { asNumber } from "@/lib/normalize/numbers";
 import { limitsFromEnv } from "@/lib/risk/limits";
 import { loadRiskState, persistRiskSnapshot } from "@/lib/risk/persist";
 import { recordClosedTrade } from "@/lib/risk/state";
-import { calculateLiveRealizedPnl } from "@/lib/live/realized-pnl";
+import { calculateLiveRealizedPnl, liveSettlementReady } from "@/lib/live/realized-pnl";
 
 const log = childLogger({ component: "live-venue-sync" });
 
@@ -57,8 +57,20 @@ function settlementReadyAt(endDate: Date | null | undefined, fallback: Date): Da
   return new Date(base.getTime() + LIVE_CLAIM_DELAY_MS);
 }
 
+type VenuePositionIndex = {
+  byToken: Map<string, VenuePositionNumbers>;
+  byVenuePositionId: Map<string, VenuePositionNumbers>;
+};
+
+function tabPriority(tab?: string): number {
+  if (tab === "ONGOING") return 3;
+  if (tab === "PENDING_CLAIM") return 2;
+  if (tab === "ENDED") return 1;
+  return 0;
+}
+
 function addVenueRows(
-  byToken: Map<string, VenuePositionNumbers>,
+  index: VenuePositionIndex,
   rows:
     | W3WPredictionRestAPI.QueryPositionsResponsePositionsInner[]
     | W3WPredictionRestAPI.QuerySettledPositionHistoryResponsePositionsInner[]
@@ -68,9 +80,39 @@ function addVenueRows(
   for (const row of rows ?? []) {
     const mapped = mapVenuePosition(row);
     if (!mapped.tokenId) continue;
-    byToken.set(mapped.tokenId, mergeVenuePosition(byToken.get(mapped.tokenId), mapped, tab));
+
+    const venueId = mapped.venuePositionId;
+    if (venueId) {
+      const previousById = index.byVenuePositionId.get(venueId);
+      index.byVenuePositionId.set(
+        venueId,
+        mergeVenuePosition(previousById, mapped, tab),
+      );
+    }
+
+    // A token can have multiple historical venue positions. Never let an ENDED
+    // row overwrite an ONGOING row for token-based fallback matching. Exact
+    // venuePositionId matching is preferred everywhere once it is known.
+    const previous = index.byToken.get(mapped.tokenId);
+    const previousPriority = Number(
+      previous && typeof (previous as VenuePositionNumbers & { __tabPriority?: number }).__tabPriority === "number"
+        ? (previous as VenuePositionNumbers & { __tabPriority?: number }).__tabPriority
+        : 0,
+    );
+    const next = mergeVenuePosition(previous, mapped, tab) as VenuePositionNumbers & { __tabPriority?: number };
+    if (!previous || tabPriority(tab) >= previousPriority) {
+      next.__tabPriority = tabPriority(tab);
+      index.byToken.set(mapped.tokenId, next);
+    }
   }
 }
+
+function stripVenueIndexMeta(value: VenuePositionNumbers): VenuePositionNumbers {
+  const clone = { ...(value as VenuePositionNumbers & { __tabPriority?: number }) };
+  delete (clone as VenuePositionNumbers & { __tabPriority?: number }).__tabPriority;
+  return clone;
+}
+
 
 async function stampExpiredClaimTimers(now: Date): Promise<void> {
   const rows = await prisma.position.findMany({
@@ -97,11 +139,12 @@ async function stampExpiredClaimTimers(now: Date): Promise<void> {
 
 
 async function ensureVenueOpenRows(
-  byToken: Map<string, VenuePositionNumbers>,
+  index: VenuePositionIndex,
 ): Promise<number> {
   let createdOrRecovered = 0;
 
-  for (const [tokenId, venue] of byToken) {
+  for (const [tokenId, rawVenue] of index.byToken) {
+    const venue = stripVenueIndexMeta(rawVenue);
     if (!(venue.tradableShares != null && venue.tradableShares > 1e-8)) continue;
     if (venue.expired) continue;
 
@@ -214,12 +257,12 @@ async function ensureVenueOpenRows(
 }
 
 async function overlayVenueNumbers(
-  byToken: Map<string, VenuePositionNumbers>,
+  index: VenuePositionIndex,
   now: Date,
 ): Promise<{ updated: number; realizedDelta: number }> {
-  if (byToken.size === 0) return { updated: 0, realizedDelta: 0 };
+  if (index.byToken.size === 0 && index.byVenuePositionId.size === 0) return { updated: 0, realizedDelta: 0 };
   const rows = await prisma.position.findMany({
-    where: { mode: TradingMode.LIVE, tokenId: { in: [...byToken.keys()] } },
+    where: { mode: TradingMode.LIVE, tokenId: { in: [...index.byToken.keys()] } },
     orderBy: { openedAt: "desc" },
     include: {
       market: { select: { topic: { select: { endDate: true } } } },
@@ -240,16 +283,36 @@ async function overlayVenueNumbers(
   let updated = 0;
   let realizedDelta = 0;
   for (const row of rows) {
-    const venue = byToken.get(row.tokenId);
+    const raw =
+      row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
+        ? (row.rawPayload as Record<string, unknown>)
+        : {};
+    const rawVenuePositionId =
+      row.venuePositionId ??
+      (typeof raw.venuePositionId === "string" ? raw.venuePositionId : null);
+    const exactVenue = rawVenuePositionId
+      ? index.byVenuePositionId.get(rawVenuePositionId)
+      : undefined;
+    // Token fallback is safe only for an OPEN row that has not yet been pinned
+    // to a Binance venuePositionId. Closed rows must never receive another
+    // historical position's numbers merely because they share a tokenId.
+    const fallbackVenue = row.status === PositionStatus.OPEN
+      ? index.byToken.get(row.tokenId)
+      : undefined;
+    const venue = exactVenue ?? fallbackVenue;
     if (!venue) continue;
-    const already = seen.has(row.tokenId);
-    seen.add(row.tokenId);
-    if (already && !(row.status === PositionStatus.OPEN && venue.expired)) continue;
+    const already = seen.has(row.id);
+    seen.add(row.id);
+    if (already) continue;
     const data: Prisma.PositionUpdateInput = {};
     const extra: Record<string, unknown> =
       row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
         ? { ...(row.rawPayload as Record<string, unknown>) }
         : {};
+    if (venue.venuePositionId) {
+      extra.venuePositionId = venue.venuePositionId;
+      data.venuePositionId = venue.venuePositionId;
+    }
     const bookClose = bookClosePrice(row.rawPayload);
     const settled = venue.expired === true;
     const rawExpired = extra.expired === true;
@@ -385,14 +448,13 @@ async function canonicalizeLiveRealizedCache(now: Date): Promise<{ changed: numb
       row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
         ? (row.rawPayload as Record<string, unknown>)
         : {};
-    const expired = raw.expired === true || raw.venueSettlementValue != null || raw.claimAmount != null;
-    const readyAt = raw.settlementReadyAt != null ? Date.parse(String(raw.settlementReadyAt)) : NaN;
-    const settlementReady =
-      expired &&
-      ((Number.isFinite(readyAt) && now.getTime() >= readyAt) ||
-        (row.closedAt != null &&
-          row.market.topic.endDate != null &&
-          row.closedAt.getTime() >= row.market.topic.endDate.getTime() + LIVE_CLAIM_DELAY_MS));
+    const settlementReady = liveSettlementReady({
+      rawPayload: row.rawPayload,
+      closedAt: row.closedAt,
+      endDate: row.market.topic.endDate,
+      now,
+      delayMs: LIVE_CLAIM_DELAY_MS,
+    });
 
     const canonical = calculateLiveRealizedPnl(
       {
@@ -468,7 +530,7 @@ function isExpiredPayload(raw: unknown): boolean {
 async function redeemEligible(
   venue: LivePositionVenue,
   ctx: LiveTradeContext,
-  byToken: Map<string, VenuePositionNumbers>,
+  index: VenuePositionIndex,
   now: Date,
   immediate = false,
 ): Promise<number> {
@@ -483,7 +545,11 @@ async function redeemEligible(
       const started = new Date(claim.startedAt);
       if (!lastStartedAt || started > lastStartedAt) lastStartedAt = started;
     }
-    const venueRow = byToken.get(row.tokenId);
+    const venueRow = row.venuePositionId
+      ? index.byVenuePositionId.get(row.venuePositionId)
+      : row.status === PositionStatus.OPEN
+        ? index.byToken.get(row.tokenId)
+        : undefined;
     if (
       !shouldClaimPosition({
         now,
@@ -503,7 +569,8 @@ async function redeemEligible(
     });
   }
   if (immediate) {
-    for (const [tokenId, venueRow] of byToken) {
+    for (const [tokenId, rawVenueRow] of index.byToken) {
+      const venueRow = stripVenueIndexMeta(rawVenueRow);
       if (ready.some((row) => row.tokenId === tokenId)) continue;
       if (!venueRow.canClaim && !(venueRow.claimAmount != null && venueRow.claimAmount > 0)) {
         continue;
@@ -562,8 +629,11 @@ async function loadVenuePositions(
   venue: LivePositionVenue,
   ctx: LiveTradeContext,
   options: { includeEnded?: boolean } = {},
-): Promise<Map<string, VenuePositionNumbers>> {
-  const byToken = new Map<string, VenuePositionNumbers>();
+): Promise<VenuePositionIndex> {
+  const index: VenuePositionIndex = {
+    byToken: new Map<string, VenuePositionNumbers>(),
+    byVenuePositionId: new Map<string, VenuePositionNumbers>(),
+  };
   for (const tab of VENUE_POSITION_TABS) {
     try {
       const page = await venue.queryPositions({
@@ -571,7 +641,7 @@ async function loadVenuePositions(
         tab,
         limit: 100,
       });
-      addVenueRows(byToken, page.positions, tab);
+      addVenueRows(index, page.positions, tab);
       if (tab === "PENDING_CLAIM") {
         log.info(
           { pendingClaim: page.positions?.length ?? 0 },
@@ -593,12 +663,12 @@ async function loadVenuePositions(
         walletAddress: ctx.walletAddress,
         limit: 100,
       });
-      addVenueRows(byToken, settled.positions, "ENDED");
+      addVenueRows(index, settled.positions, "ENDED");
     } catch (error) {
       log.warn({ err: String(error) }, "querySettledPositionHistory skipped");
     }
   }
-  return byToken;
+  return index;
 }
 
 async function persistVenueRealizedDelta(delta: number, now: Date): Promise<void> {
@@ -651,13 +721,42 @@ export async function syncLivePositionsFromVenue(
     },
     select: { tokenId: true },
   });
-  const byToken = await loadVenuePositions(
+  // Once an expired position is CLOSED locally, keep a narrow settlement
+  // polling window alive until Binance actually returns the venue result.
+  // This is deliberately keyed to the local position and its venuePositionId;
+  // it does not make old ENDED rows eligible to overwrite unrelated positions.
+  const settlementCandidates = await prisma.position.findMany({
+    where: {
+      mode: TradingMode.LIVE,
+      status: PositionStatus.CLOSED,
+      market: { topic: { endDate: { lte: now } } },
+    },
+    select: {
+      venuePositionId: true,
+      rawPayload: true,
+      closedAt: true,
+      market: { select: { topic: { select: { endDate: true } } } },
+    },
+  });
+  const settlementPollDue = settlementCandidates.some((row) =>
+    liveSettlementReady({
+      rawPayload: row.rawPayload,
+      closedAt: row.closedAt,
+      endDate: row.market.topic.endDate,
+      now,
+    }) === false &&
+    row.closedAt != null &&
+    row.market.topic.endDate != null &&
+    row.closedAt.getTime() >= row.market.topic.endDate.getTime() &&
+    now.getTime() >= row.market.topic.endDate.getTime() + LIVE_CLAIM_DELAY_MS,
+  );
+  const index = await loadVenuePositions(
     venue,
     ctx,
-    { includeEnded: options.immediate === true || expiredOpen.length > 0 },
+    { includeEnded: options.immediate === true || expiredOpen.length > 0 || settlementPollDue },
   );
-  const recovered = await ensureVenueOpenRows(byToken);
-  const overlay = await overlayVenueNumbers(byToken, now);
+  const recovered = await ensureVenueOpenRows(index);
+  const overlay = await overlayVenueNumbers(index, now);
   const canonicalized = await canonicalizeLiveRealizedCache(now);
   if (canonicalized.changed > 0) {
     log.info({ canonicalized: canonicalized.changed }, "LIVE realized PnL cache repaired");
@@ -668,7 +767,7 @@ export async function syncLivePositionsFromVenue(
     return { updated: overlay.updated + recovered, claimed: 0 };
   }
   await refreshPendingRedeems(venue, ctx.walletAddress);
-  const claimed = await redeemEligible(venue, ctx, byToken, now, options.immediate === true);
+  const claimed = await redeemEligible(venue, ctx, index, now, options.immediate === true);
   return { updated: overlay.updated + recovered, claimed };
 }
 
@@ -680,14 +779,14 @@ export async function claimLiveWinnings(
 ): Promise<{ claimed: number }> {
   const now = new Date();
   await stampExpiredClaimTimers(now);
-  const byToken = await loadVenuePositions(venue, ctx, { includeEnded: true });
-  const overlay = await overlayVenueNumbers(byToken, now);
+  const index = await loadVenuePositions(venue, ctx, { includeEnded: true });
+  const overlay = await overlayVenueNumbers(index, now);
   const canonicalized = await canonicalizeLiveRealizedCache(now);
   if (canonicalized.changed > 0) {
     log.info({ canonicalized: canonicalized.changed }, "LIVE realized PnL cache repaired");
   }
   await persistVenueRealizedDelta(overlay.realizedDelta + canonicalized.realizedDelta, now);
   await refreshPendingRedeems(venue, ctx.walletAddress);
-  const claimed = await redeemEligible(venue, ctx, byToken, now, options.immediate === true);
+  const claimed = await redeemEligible(venue, ctx, index, now, options.immediate === true);
   return { claimed };
 }
