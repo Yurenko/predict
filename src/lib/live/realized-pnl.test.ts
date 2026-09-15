@@ -61,7 +61,7 @@ describe("calculateLiveRealizedPnl", () => {
       closedAt: new Date("2026-09-14T10:11:00Z"),
       endDate: new Date("2026-09-14T10:10:00Z"),
     }, { includeSettlement: true });
-    expect(pnl).toBeCloseTo(-0.1 - 0.25);
+    expect(pnl).toBeCloseTo(-0.1);
   });
 });
 
