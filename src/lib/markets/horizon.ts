@@ -64,7 +64,7 @@ export function parseCollectorCategories(
   return parts;
 }
 
-export const SHORT_CRYPTO_SYMBOLS = ["ETHUSDT"] as const;
+export const SHORT_CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"] as const;
 
 export interface ListedTopicLike {
   marketTopicId?: number | bigint | string;
@@ -107,7 +107,9 @@ function isShortCryptoAsset(text: string, symbol?: string | null): boolean {
   const normalized = symbol?.trim().toUpperCase() ?? "";
   if ((SHORT_CRYPTO_SYMBOLS as readonly string[]).includes(normalized))
     return true;
-  return /ETHUSDT|\bETH\b|Ethereum/i.test(text);
+  return (/BTCUSDT|\bBTC\b|Bitcoin/i.test(text) ||
+    /ETHUSDT|\bETH\b|Ethereum/i.test(text) ||
+    /BNBUSDT|\bBNB\b/i.test(text));
 }
 
 function isShortCryptoWindow(text: string): boolean {
