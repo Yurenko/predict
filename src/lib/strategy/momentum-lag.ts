@@ -106,6 +106,10 @@ export function createMomentumLagStrategy(
       const fair = picked.side === "up" ? 0.7 : 0.3;
       const tokenFair = outcomeIsDownToken(context.outcomeName) ? 1 - fair : fair;
       const grossEdge = direction === "BUY" ? tokenFair - ask : bid - tokenFair;
+      const netEdge = grossEdge - costs.total;
+      // Never enter with a negative edge. Price caps alone are not an entry edge:
+      // e.g. BUY @ 0.74 with fair=0.70 is a losing trade before execution costs.
+      if (netEdge <= 0) return null;
       return makeSignal({
         strategyId: "underlying-momentum-lag",
         context,

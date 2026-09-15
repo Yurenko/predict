@@ -2,11 +2,11 @@ import { redis } from "@/lib/db/redis";
 import { childLogger } from "@/lib/logger";
 import type { PaperAction } from "@/lib/paper/action";
 
-/** v2: old `control:live-binary-mode=independent` must not override Paper-style flip. */
+/** LIVE defaults to independent legs so a new signal does not force-close a profitable/loss-making leg. */
 export const LIVE_BINARY_MODE_KEY = "control:live-binary-mode.v2";
 export const LIVE_BINARY_MODE_KEY_LEGACY = "control:live-binary-mode";
 export type LiveBinaryMode = "independent" | "flip";
-export const DEFAULT_LIVE_BINARY_MODE: LiveBinaryMode = "flip";
+export const DEFAULT_LIVE_BINARY_MODE: LiveBinaryMode = "independent";
 
 const log = childLogger({ component: "live-binary-mode" });
 

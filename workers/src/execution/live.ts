@@ -34,6 +34,7 @@ import { invertBinaryBook, resolveBinaryWorkerTrade } from "@/lib/live/binary";
 import {
   DEFAULT_LIVE_BINARY_MODE,
   liveOppositeCloses,
+  readLiveBinaryMode,
   shouldBlockLiveFlipEnter,
 } from "@/lib/live/binary-mode";
 import { outcomeIsDownToken } from "@/lib/normalize/markets";
@@ -408,7 +409,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
     openPositions: await reservedLiveSlots(),
   };
 
-  const binaryMode = DEFAULT_LIVE_BINARY_MODE;
+  const binaryMode = await readLiveBinaryMode();
   const oppositeCloses = liveOppositeCloses(binaryMode);
 
   const enabled = await prisma.strategy.findMany({ where: { enabled: true } });

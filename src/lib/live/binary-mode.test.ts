@@ -7,9 +7,9 @@ import {
 } from "./binary-mode";
 
 describe("live binary mode", () => {
-  it("defaults to flip so Live does not hold Up and Down together", () => {
-    expect(DEFAULT_LIVE_BINARY_MODE).toBe("flip");
-    expect(parseLiveBinaryMode(null) ?? DEFAULT_LIVE_BINARY_MODE).toBe("flip");
+  it("defaults to independent so Live does not force-close on every opposite signal", () => {
+    expect(DEFAULT_LIVE_BINARY_MODE).toBe("independent");
+    expect(parseLiveBinaryMode(null) ?? DEFAULT_LIVE_BINARY_MODE).toBe("independent");
   });
 
   it("parses independent vs flip", () => {

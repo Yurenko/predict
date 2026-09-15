@@ -169,6 +169,21 @@ describe("underlying-momentum-lag", () => {
     expect(signal?.direction).toBe("SELL");
   });
 
+  it("rejects a negative edge even when the price is below the buy cap", () => {
+    const strategy = createMomentumLagStrategy({ safetyMargin: 0 });
+    const signal = strategy.evaluate(
+      ctx({
+        startPrice: 100,
+        underlyingPrice: 100.4,
+        bestAsk: 0.75,
+        bestBid: 0.74,
+        outcomeName: "Up",
+        features: { underlyingReturn1m: 0.002 } as StrategyContext["features"],
+      }),
+    );
+    expect(signal).toBeNull();
+  });
+
   it("stays flat when the underlying has not left the window open", () => {
     const signal = strategy.evaluate(
       ctx({
