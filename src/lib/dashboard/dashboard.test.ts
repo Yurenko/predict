@@ -43,7 +43,7 @@ describe("dashboard secrets", () => {
     expect(payload.ledger.closedRealized).toBe(0);
     expect(payload.ledger.pages.positions.page).toBe(1);
     expect(payload.paperEntryMode).toBe("single");
-    expect(payload.liveBinaryMode).toBe("flip");
+    expect(payload.liveBinaryMode).toBe("independent");
     expect(payload.equityCurve).toEqual([]);
     expect(payload.account.hasWallet).toBeTypeOf("boolean");
     expect(payload.account.walletPreview === null || !payload.account.walletPreview.includes("api")).toBe(true);
