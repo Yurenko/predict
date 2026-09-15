@@ -1,4 +1,7 @@
 import type { PredictionOrderbookPayload } from "@/lib/binance/sapi-wss";
+import { childLogger } from "@/lib/logger";
+
+const log = childLogger({ component: "live-realtime-management" });
 
 export type LiveRealtimeManagementHandler = (
   book: PredictionOrderbookPayload,
@@ -23,7 +26,9 @@ export async function notifyLiveRealtimeManagement(
   if (!handler) return;
   try {
     await handler(book);
-  } catch {
-    // The price collector must never be taken down by LIVE management.
+  } catch (error) {
+    // The price collector must never be taken down by LIVE management,
+    // but the failure must remain visible for LIVE diagnostics.
+    log.error({ err: String(error), marketId: book.marketId }, "LIVE realtime management failed");
   }
 }

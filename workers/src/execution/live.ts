@@ -280,7 +280,7 @@ async function liveSlotUsage(): Promise<{ reserved: number; openAndInflight: num
   const [open, inflight, pendings] = await Promise.all([
     prisma.position.findMany({
       where: { mode: TradingMode.LIVE, status: "OPEN" },
-      select: { tokenId: true, marketId: true, strategyId: true, rawPayload: true, shares: true, avgPrice: true },
+      select: { tokenId: true, marketId: true, rawPayload: true, shares: true, avgPrice: true },
     }),
     prisma.order.findMany({
       where: { mode: TradingMode.LIVE, status: { in: LIVE_INFLIGHT_STATUSES } },

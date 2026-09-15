@@ -4,6 +4,7 @@ import { bestPrices, type PredictionOrderbookPayload } from "@/lib/binance/sapi-
 import { cacheLiveOrderbook, ingestRaw } from "@/lib/ingest/raw-store";
 import { hasExecutableSide } from "@/lib/ingest/orderbook-merge";
 import { insertNormalizedOrderbook } from "@/lib/normalize/store";
+import { notifyLiveRealtimeManagement } from "@/lib/live/realtime-management";
 
 const lastPersistAt = new Map<number, number>();
 
@@ -20,6 +21,11 @@ export async function persistPredictionOrderbook(
     bids: book.bids,
     asks: book.asks,
   });
+
+  // LIVE position management is driven by the prediction-market price itself,
+  // not by BTC/ETH/BNB spot and not by the slower trading cycle. Notify after
+  // the Redis snapshot is updated so the management path sees this exact book.
+  void notifyLiveRealtimeManagement(book);
 
   if (!hasExecutableSide({ bestBid, bestAsk })) {
     return;
