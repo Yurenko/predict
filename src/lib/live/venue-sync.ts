@@ -6,7 +6,6 @@ import { isExpiredAt } from "@/lib/markets/settlement";
 import type { LiveTradeContext } from "@/lib/live/engine";
 import {
   LIVE_CLAIM_DELAY_MS,
-  VENUE_POSITION_TABS,
   isClaimFinished,
   isClaimInFlight,
   mapVenuePosition,
@@ -25,6 +24,11 @@ import { limitsFromEnv } from "@/lib/risk/limits";
 import { loadRiskState, persistRiskSnapshot } from "@/lib/risk/persist";
 import { recordClosedTrade } from "@/lib/risk/state";
 import { calculateLiveRealizedPnl, liveSettlementReady } from "@/lib/live/realized-pnl";
+import {
+  liveOverlayWriteNeeded,
+  livePositionTabs,
+  shouldAssignLiveVenuePositionId,
+} from "@/lib/live/sync-scope";
 
 const log = childLogger({ component: "live-venue-sync" });
 
@@ -256,13 +260,44 @@ async function ensureVenueOpenRows(
   return createdOrRecovered;
 }
 
+async function loadVenuePositionOwners(venueIds: string[]): Promise<Map<string, string>> {
+  const owners = new Map<string, string>();
+  if (venueIds.length === 0) return owners;
+  const rows = await prisma.position.findMany({
+    where: { mode: TradingMode.LIVE, venuePositionId: { in: venueIds } },
+    select: { id: true, venuePositionId: true },
+    orderBy: { openedAt: "desc" },
+  });
+  for (const row of rows) {
+    if (row.venuePositionId && !owners.has(row.venuePositionId)) {
+      owners.set(row.venuePositionId, row.id);
+    }
+  }
+  return owners;
+}
+
 async function overlayVenueNumbers(
   index: VenuePositionIndex,
   now: Date,
+  options: { inventoryOnly?: boolean } = {},
 ): Promise<{ updated: number; realizedDelta: number }> {
   if (index.byToken.size === 0 && index.byVenuePositionId.size === 0) return { updated: 0, realizedDelta: 0 };
+  const tokenIds = [...index.byToken.keys()];
+  const venueIds = [...index.byVenuePositionId.keys()];
+  const inventoryOnly = options.inventoryOnly === true;
   const rows = await prisma.position.findMany({
-    where: { mode: TradingMode.LIVE, tokenId: { in: [...index.byToken.keys()] } },
+    where: {
+      mode: TradingMode.LIVE,
+      ...(inventoryOnly ? { status: PositionStatus.OPEN } : {}),
+      OR: [
+        ...(tokenIds.length > 0
+          ? inventoryOnly
+            ? [{ tokenId: { in: tokenIds } }]
+            : [{ status: PositionStatus.OPEN, tokenId: { in: tokenIds } }]
+          : []),
+        ...(venueIds.length > 0 ? [{ venuePositionId: { in: venueIds } }] : []),
+      ],
+    },
     orderBy: { openedAt: "desc" },
     include: {
       market: { select: { topic: { select: { endDate: true } } } },
@@ -279,6 +314,7 @@ async function overlayVenueNumbers(
       },
     },
   });
+  const owners = await loadVenuePositionOwners(venueIds);
   const seen = new Set<string>();
   let updated = 0;
   let realizedDelta = 0;
@@ -309,7 +345,13 @@ async function overlayVenueNumbers(
       row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
         ? { ...(row.rawPayload as Record<string, unknown>) }
         : {};
-    if (venue.venuePositionId) {
+    if (
+      venue.venuePositionId &&
+      shouldAssignLiveVenuePositionId({
+        rowId: row.id,
+        ownerId: owners.get(venue.venuePositionId),
+      })
+    ) {
       extra.venuePositionId = venue.venuePositionId;
       data.venuePositionId = venue.venuePositionId;
     }
@@ -331,7 +373,15 @@ async function overlayVenueNumbers(
     const localRealized = asNumber(row.realizedPnl) ?? 0;
     let rowRealizedDelta = 0;
 
-    if (venue.venuePositionId) data.venuePositionId = venue.venuePositionId;
+    if (
+      venue.venuePositionId &&
+      shouldAssignLiveVenuePositionId({
+        rowId: row.id,
+        ownerId: owners.get(venue.venuePositionId),
+      })
+    ) {
+      data.venuePositionId = venue.venuePositionId;
+    }
     if (venue.claimAmount != null) extra.claimAmount = venue.claimAmount;
     if (venue.settlementValue != null) extra.venueSettlementValue = venue.settlementValue;
     if (venue.tradableShares != null) extra.venueTradableShares = venue.tradableShares;
@@ -400,6 +450,34 @@ async function overlayVenueNumbers(
     }
 
     if (Object.keys(data).length === 0) continue;
+    if (
+      !liveOverlayWriteNeeded(
+        {
+          status: row.status,
+          shares: row.shares,
+          avgPrice: row.avgPrice,
+          totalCost: row.totalCost,
+          realizedPnl: row.realizedPnl,
+          unrealizedPnl: row.unrealizedPnl,
+          venuePositionId: row.venuePositionId,
+          closedAt: row.closedAt,
+        },
+        {
+          status: typeof data.status === "string" ? data.status : undefined,
+          shares: data.shares,
+          avgPrice: data.avgPrice,
+          totalCost: data.totalCost,
+          realizedPnl: data.realizedPnl,
+          unrealizedPnl: data.unrealizedPnl,
+          venuePositionId:
+            typeof data.venuePositionId === "string" ? data.venuePositionId : undefined,
+          closedAt: data.closedAt instanceof Date ? data.closedAt : undefined,
+          rawPayload: data.rawPayload,
+        },
+      )
+    ) {
+      continue;
+    }
     try {
       await prisma.position.update({ where: { id: row.id }, data });
       realizedDelta += rowRealizedDelta;
@@ -423,8 +501,15 @@ async function overlayVenueNumbers(
 
 
 async function canonicalizeLiveRealizedCache(now: Date): Promise<{ changed: number; realizedDelta: number }> {
+  const recentClosedAfter = new Date(now.getTime() - 24 * 60 * 60_000);
   const rows = await prisma.position.findMany({
-    where: { mode: TradingMode.LIVE },
+    where: {
+      mode: TradingMode.LIVE,
+      OR: [
+        { status: PositionStatus.OPEN },
+        { closedAt: { gte: recentClosedAfter } },
+      ],
+    },
     include: {
       market: { select: { topic: { select: { endDate: true } } } },
       executions: {
@@ -485,10 +570,6 @@ async function canonicalizeLiveRealizedCache(now: Date): Promise<{ changed: numb
     });
     changed += 1;
     realizedDelta += canonical - current;
-    log.info(
-      { positionId: row.id, previous: current, canonical, settlementReady },
-      "LIVE realized PnL cache canonicalized",
-    );
   }
   return { changed, realizedDelta };
 }
@@ -628,13 +709,13 @@ async function redeemEligible(
 async function loadVenuePositions(
   venue: LivePositionVenue,
   ctx: LiveTradeContext,
-  options: { includeEnded?: boolean } = {},
+  options: { includeEnded?: boolean; settledHistory?: boolean } = {},
 ): Promise<VenuePositionIndex> {
   const index: VenuePositionIndex = {
     byToken: new Map<string, VenuePositionNumbers>(),
     byVenuePositionId: new Map<string, VenuePositionNumbers>(),
   };
-  for (const tab of VENUE_POSITION_TABS) {
+  for (const tab of livePositionTabs(options.includeEnded === true)) {
     try {
       const page = await venue.queryPositions({
         walletAddress: ctx.walletAddress,
@@ -642,7 +723,7 @@ async function loadVenuePositions(
         limit: 100,
       });
       addVenueRows(index, page.positions, tab);
-      if (tab === "PENDING_CLAIM") {
+      if (tab === "PENDING_CLAIM" && (page.positions?.length ?? 0) > 0) {
         log.info(
           { pendingClaim: page.positions?.length ?? 0 },
           "live queryPositions PENDING_CLAIM",
@@ -652,12 +733,9 @@ async function loadVenuePositions(
       log.warn({ err: String(error), tab }, "queryPositions skipped");
     }
   }
-  // ENDED history is not needed to maintain an OPEN position. ONGOING and
-  // PENDING_CLAIM are the authoritative live inventory states. Querying the
-  // full settled history every trading cycle adds a high-latency REST call
-  // and can delay a real-money EXIT. Fetch it only for explicit claim/recovery
-  // passes.
-  if (options.includeEnded) {
+  // Settled history is claim/recovery only. The trading tick only needs
+  // ONGOING + PENDING_CLAIM so ENTER/EXIT are not waiting on ENDED REST.
+  if (options.settledHistory) {
     try {
       const settled = await venue.querySettledPositionHistory({
         walletAddress: ctx.walletAddress,
@@ -712,7 +790,7 @@ export async function syncLivePositionsFromVenue(
   options: { immediate?: boolean; claim?: boolean } = {},
 ): Promise<{ updated: number; claimed: number }> {
   const now = new Date();
-  await stampExpiredClaimTimers(now);
+  const ledger = options.claim !== false || options.immediate === true;
   const expiredOpen = await prisma.position.findMany({
     where: {
       mode: TradingMode.LIVE,
@@ -721,49 +799,23 @@ export async function syncLivePositionsFromVenue(
     },
     select: { tokenId: true },
   });
-  // Once an expired position is CLOSED locally, keep a narrow settlement
-  // polling window alive until Binance actually returns the venue result.
-  // This is deliberately keyed to the local position and its venuePositionId;
-  // it does not make old ENDED rows eligible to overwrite unrelated positions.
-  const settlementCandidates = await prisma.position.findMany({
-    where: {
-      mode: TradingMode.LIVE,
-      status: PositionStatus.CLOSED,
-      market: { topic: { endDate: { lte: now } } },
-    },
-    select: {
-      venuePositionId: true,
-      rawPayload: true,
-      closedAt: true,
-      market: { select: { topic: { select: { endDate: true } } } },
-    },
+  if (ledger) await stampExpiredClaimTimers(now);
+  const index = await loadVenuePositions(venue, ctx, {
+    includeEnded: ledger || expiredOpen.length > 0,
+    settledHistory: ledger,
   });
-  const settlementPollDue = settlementCandidates.some((row) =>
-    liveSettlementReady({
-      rawPayload: row.rawPayload,
-      closedAt: row.closedAt,
-      endDate: row.market.topic.endDate,
-      now,
-    }) === false &&
-    row.closedAt != null &&
-    row.market.topic.endDate != null &&
-    row.closedAt.getTime() >= row.market.topic.endDate.getTime() &&
-    now.getTime() >= row.market.topic.endDate.getTime() + LIVE_CLAIM_DELAY_MS,
-  );
-  const index = await loadVenuePositions(
-    venue,
-    ctx,
-    { includeEnded: options.immediate === true || expiredOpen.length > 0 || settlementPollDue },
-  );
   const recovered = await ensureVenueOpenRows(index);
-  const overlay = await overlayVenueNumbers(index, now);
-  const canonicalized = await canonicalizeLiveRealizedCache(now);
-  if (canonicalized.changed > 0) {
-    log.info({ canonicalized: canonicalized.changed }, "LIVE realized PnL cache repaired");
+  const overlay = await overlayVenueNumbers(index, now, { inventoryOnly: !ledger });
+  let canonicalized = { changed: 0, realizedDelta: 0 };
+  if (ledger) {
+    canonicalized = await canonicalizeLiveRealizedCache(now);
+    if (canonicalized.changed > 0) {
+      log.info({ canonicalized: canonicalized.changed }, "LIVE realized PnL cache repaired");
+    }
+    await stampExpiredClaimTimers(now);
   }
   await persistVenueRealizedDelta(overlay.realizedDelta + canonicalized.realizedDelta, now);
-  await stampExpiredClaimTimers(now);
-  if (options.claim === false && options.immediate !== true) {
+  if (!ledger) {
     return { updated: overlay.updated + recovered, claimed: 0 };
   }
   await refreshPendingRedeems(venue, ctx.walletAddress);
@@ -779,7 +831,10 @@ export async function claimLiveWinnings(
 ): Promise<{ claimed: number }> {
   const now = new Date();
   await stampExpiredClaimTimers(now);
-  const index = await loadVenuePositions(venue, ctx, { includeEnded: true });
+  const index = await loadVenuePositions(venue, ctx, {
+    includeEnded: true,
+    settledHistory: true,
+  });
   const overlay = await overlayVenueNumbers(index, now);
   const canonicalized = await canonicalizeLiveRealizedCache(now);
   if (canonicalized.changed > 0) {

@@ -15,6 +15,7 @@ import {
 } from "@/lib/live/position-fill";
 import { clearLiveFlatten } from "@/lib/live/flatten";
 import { inc } from "@/lib/observability/metrics";
+import { liveReconcileWriteNeeded } from "@/lib/live/sync-scope";
 import { limitsFromEnv } from "@/lib/risk/limits";
 import { loadRiskState, persistRiskSnapshot } from "@/lib/risk/persist";
 import { recordClosedTrade } from "@/lib/risk/state";
@@ -63,6 +64,65 @@ function fillFromOfficial(row: OfficialOrder) {
     network: numericAmount(row.networkFee) ?? 0,
     fillPct,
   };
+}
+
+type LocalReconcileOrder = {
+  status: string;
+  filledShareQty: unknown;
+  filledUsdtAmount: unknown;
+  marketProviderFee: unknown;
+  networkFee: unknown;
+  vendorOrderId: string | null;
+  fillPercentage: unknown;
+  averagePrice: unknown;
+};
+
+/** True when venue fill/status actually differs from the local LIVE order. */
+export function officialLiveOrderNeedsApply(
+  order: LocalReconcileOrder,
+  row: OfficialOrder,
+): boolean {
+  if (!row.orderId) return false;
+  const parsed = fillFromOfficial(row);
+  const nextStatus = parsed.status ?? order.status;
+  const previousShares = Number(order.filledShareQty ?? 0);
+  const previousNotional = Number(order.filledUsdtAmount ?? 0);
+  const previousFee = Number(order.marketProviderFee ?? 0);
+  const previousNetwork = Number(order.networkFee ?? 0);
+  const cumulativeShares = parsed.shares ?? previousShares;
+  const cumulativeNotional = parsed.notional ?? previousNotional;
+  const cumulativeFee = parsed.fee;
+  const cumulativeNetwork = parsed.network;
+  let deltaShares = Math.max(0, cumulativeShares - previousShares);
+  let deltaNotional = Math.max(0, cumulativeNotional - previousNotional);
+  const price =
+    parsed.price ??
+    (deltaShares > 0 && deltaNotional > 0 ? deltaNotional / deltaShares : null);
+  if (deltaShares > 0 && deltaNotional <= 0 && price && price > 0) {
+    deltaNotional = deltaShares * price;
+  }
+  if (deltaNotional > 0 && deltaShares <= 0 && price && price > 0) {
+    deltaShares = deltaNotional / price;
+  }
+  const hasFillDelta = Boolean(price && deltaShares > 0 && deltaNotional > 0);
+  return liveReconcileWriteNeeded({
+    currentStatus: order.status,
+    nextStatus,
+    hasFillDelta,
+    previousShares,
+    cumulativeShares,
+    previousNotional,
+    cumulativeNotional,
+    previousFee,
+    cumulativeFee,
+    previousNetwork,
+    cumulativeNetwork,
+    vendorOrderIdChanged: Boolean(row.vendorOrderId && row.vendorOrderId !== order.vendorOrderId),
+    fillPctChanged:
+      parsed.fillPct != null && parsed.fillPct !== asNumber(order.fillPercentage),
+    averagePriceChanged:
+      parsed.price != null && parsed.price !== asNumber(order.averagePrice),
+  });
 }
 
 function snapshotFromRow(row: {
@@ -122,6 +182,9 @@ export async function applyOfficialLiveOrder(row: OfficialOrder): Promise<{ appl
       },
     });
     if (!order) return { applied: false, realizedDelta: 0 };
+    if (!officialLiveOrderNeedsApply(order, row)) {
+      return { applied: false, realizedDelta: 0 };
+    }
 
     const parsed = fillFromOfficial(row);
     const nextStatus = parsed.status ?? order.status;
@@ -443,9 +506,35 @@ export async function reconcileLiveOrders(options: {
   active: W3WPredictionRestAPI.QueryActiveOrdersResponse;
 }): Promise<number> {
   const rows = [...(options.history.orders ?? []), ...(options.active.orders ?? [])];
+  const venueIds = [...new Set(rows.map((row) => row.orderId).filter((id): id is string => Boolean(id)))];
+  const existing =
+    venueIds.length === 0
+      ? []
+      : await prisma.order.findMany({
+          where: { mode: TradingMode.LIVE, venueOrderId: { in: venueIds } },
+          select: {
+            venueOrderId: true,
+            status: true,
+            filledShareQty: true,
+            filledUsdtAmount: true,
+            marketProviderFee: true,
+            networkFee: true,
+            vendorOrderId: true,
+            fillPercentage: true,
+            averagePrice: true,
+          },
+        });
+  const localByVenueId = new Map(
+    existing
+      .filter((row) => row.venueOrderId)
+      .map((row) => [row.venueOrderId as string, row]),
+  );
   let applied = 0;
   let realizedDelta = 0;
   for (const row of rows) {
+    if (!row.orderId) continue;
+    const local = localByVenueId.get(row.orderId);
+    if (!local || !officialLiveOrderNeedsApply(local, row)) continue;
     try {
       const result = await applyOfficialLiveOrder(row);
       if (result.applied) applied += 1;

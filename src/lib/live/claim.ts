@@ -1,8 +1,8 @@
 import { asNumber } from "@/lib/normalize/numbers";
 import { feeAmountToUsdt } from "@/lib/paper/quote-validate";
 
-/** Wait this long after an expired close before calling batchRedeem. */
-export const LIVE_CLAIM_DELAY_MS = 60_000;
+/** Wait this long after a close/expiry before the one-shot batchRedeem. */
+export const LIVE_CLAIM_DELAY_MS = 30_000;
 /** If a batch redeem fails, wait this long between single-token retries. */
 export const LIVE_CLAIM_STAGGER_MS = 90_000;
 
@@ -131,7 +131,7 @@ export function shouldClaimPosition(options: {
   claim: ClaimState;
   canClaim: boolean;
   claimAmount: number | null;
-  /** Manual «Отримати все»: Binance already lists PENDING_CLAIM, skip the 1m timer. */
+  /** Manual «Отримати все»: Binance already lists PENDING_CLAIM, skip the delay. */
   immediate?: boolean;
 }): boolean {
   if (!options.expired) return false;

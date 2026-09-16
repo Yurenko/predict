@@ -4,9 +4,20 @@ export { assertLiveExecution, assertPaperWorkerNotLive } from "@/lib/live/gate";
 export { buildLimitPlaceOrder, buildMarketPlaceOrder, formatLimitPrice } from "@/lib/live/place";
 export { mapOfficialOrderStatus } from "@/lib/live/status";
 export { resolveWalletId } from "@/lib/live/wallet";
-export { applyOfficialLiveOrder, reconcileLiveOrders, releaseStaleLiveInflight, syncLiveOrdersFromVenue } from "@/lib/live/reconcile";
+export { applyOfficialLiveOrder, officialLiveOrderNeedsApply, reconcileLiveOrders, releaseStaleLiveInflight, syncLiveOrdersFromVenue } from "@/lib/live/reconcile";
 export { closeLivePosition } from "@/lib/live/close";
+export { armLiveClaimAfterClose, refreshLiveAccountAfterClose } from "@/lib/live/after-close";
 export { claimLiveWinnings, syncLivePositionsFromVenue } from "@/lib/live/venue-sync";
+export {
+  LIVE_INVENTORY_TABS,
+  LIVE_CLAIM_AFTER_CLOSE_MS,
+  liveOverlayWriteNeeded,
+  livePositionTabs,
+  liveReconcileWriteNeeded,
+  shouldArmLiveClaimAfterClose,
+  shouldAssignLiveVenuePositionId,
+  shouldRefreshLiveAccountAfterCycle,
+} from "@/lib/live/sync-scope";
 export {
   LIVE_MIN_ORDER_USDT,
   LIVE_ENTER_USDT_BUFFER,

@@ -17,6 +17,7 @@ import { writePaperCycle } from "@/lib/paper/cycle";
 import { isPidAlive } from "@/lib/record/types";
 import { sleep } from "@/lib/binance/rate-limit";
 import { syncLiveOrdersFromVenue, syncLivePositionsFromVenue } from "@/lib/live";
+import { armLiveClaimAfterClose } from "@/lib/live/after-close";
 import { maintainRawData } from "@/lib/ingest/raw-store";
 import { registerLiveRealtimeManagementHandler } from "@/lib/live/realtime-management";
 
@@ -183,8 +184,11 @@ export async function runRecordLoop(options: { exitOnSignal?: boolean } = {}): P
           const settled = await settleExpiredLivePositions();
           if (settled.filled > 0) {
             log.info({ filled: settled.filled }, "live expiry flatten while stopped");
+            armLiveClaimAfterClose(runtime.venue, runtime.ctx);
           }
-          const venueSync = await syncLivePositionsFromVenue(runtime.venue, runtime.ctx);
+          const venueSync = await syncLivePositionsFromVenue(runtime.venue, runtime.ctx, {
+            claim: false,
+          });
           if (venueSync.updated > 0 || venueSync.claimed > 0) {
             log.info(venueSync, "live venue sync while stopped");
           }

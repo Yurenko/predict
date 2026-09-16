@@ -12,7 +12,7 @@ import { exitIntentFromOutcome } from "@/lib/live/intent-label";
 import { readVenueTradableShares } from "@/lib/live/venue-shares";
 import { isFreshLiveBook, liveFlattenExitPrice } from "@/lib/live/notional";
 import { LIVE_INFLIGHT_STATUSES } from "@/lib/live/position-fill";
-import { syncLiveOrdersFromVenue } from "@/lib/live/reconcile";
+import { armLiveClaimAfterClose, refreshLiveAccountAfterClose } from "@/lib/live/after-close";
 import { persistPaperTrade } from "@/lib/paper/persist";
 import { manualCloseSignal } from "@/lib/paper/close";
 import type { PaperBook, PaperTradeRequest } from "@/lib/paper/engine";
@@ -175,7 +175,8 @@ export async function closeLivePosition(positionId: string): Promise<
   if (!saved) return { ok: false, reason: "persist_failed" };
 
   try {
-    await syncLiveOrdersFromVenue(runtime.venue, runtime.ctx.walletAddress);
+    await refreshLiveAccountAfterClose(runtime.venue, runtime.ctx);
+    armLiveClaimAfterClose(runtime.venue, runtime.ctx);
   } catch (error) {
     log.warn({ err: String(error), positionId }, "live close placed; reconcile deferred");
   }

@@ -68,30 +68,32 @@ import {
   shouldCancelPendingFlip,
   writePendingFlip,
 } from "@/lib/live/pending-flip";
-import { claimLiveWinnings, syncLivePositionsFromVenue } from "@/lib/live/venue-sync";
+import { syncLivePositionsFromVenue } from "@/lib/live/venue-sync";
+import {
+  shouldArmLiveClaimAfterClose,
+  shouldRefreshLiveAccountAfterCycle,
+} from "@/lib/live/sync-scope";
+import { armLiveClaimAfterClose, refreshLiveAccountAfterClose } from "@/lib/live/after-close";
 import { selectPrimarySnapshot, tickFromSnapshot } from "@/lib/normalize/tick";
 import type { PredictionOrderbookPayload } from "@/lib/binance/sapi-wss";
 
 const log = childLogger({ component: "live-worker" });
 
-let claimPassRunning = false;
-
-function scheduleLiveClaim(
+async function applyLiveCloseFollowup(
   venue: OfficialPredictionAdapter,
   ctx: LiveTradeContext,
-): void {
-  if (claimPassRunning) return;
-  claimPassRunning = true;
-  void claimLiveWinnings(venue, ctx)
-    .then((result) => {
-      if (result.claimed > 0) log.info(result, "live claim (async)");
-    })
-    .catch((error) => {
-      log.warn({ err: String(error) }, "live claim (async) skipped");
-    })
-    .finally(() => {
-      claimPassRunning = false;
-    });
+  closed: number,
+): Promise<void> {
+  try {
+    if (shouldRefreshLiveAccountAfterCycle({ closed })) {
+      await refreshLiveAccountAfterClose(venue, ctx);
+    }
+  } catch (error) {
+    log.warn({ err: String(error) }, "live reconcile after close skipped");
+  }
+  if (shouldArmLiveClaimAfterClose({ closed })) {
+    armLiveClaimAfterClose(venue, ctx);
+  }
 }
 
 const liveMarketInclude = {
@@ -279,7 +281,14 @@ async function liveSlotUsage(): Promise<{ reserved: number; openAndInflight: num
   const [open, inflight, pendings] = await Promise.all([
     prisma.position.findMany({
       where: { mode: TradingMode.LIVE, status: "OPEN" },
-      select: { tokenId: true, marketId: true, rawPayload: true, shares: true, avgPrice: true },
+      select: {
+        tokenId: true,
+        marketId: true,
+        strategyId: true,
+        rawPayload: true,
+        shares: true,
+        avgPrice: true,
+      },
     }),
     prisma.order.findMany({
       where: { mode: TradingMode.LIVE, status: { in: LIVE_INFLIGHT_STATUSES } },
@@ -560,6 +569,7 @@ export async function runLiveRealtimePositionManagement(
           { positionId: position.id, venueOrderId: result.venueOrderId, kind: decision.kind },
           "live realtime position management exit submitted",
         );
+        await applyLiveCloseFollowup(venue, ctx, 1);
       } else {
         log.warn(
           { positionId: position.id, reason: result.reason, kind: decision.kind },
@@ -604,6 +614,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
   if (settled.filled > 0) {
     log.info({ filled: settled.filled }, "live positions settled at expiry");
   }
+  let closed = settled.filled;
   riskState = await loadRiskState();
 
   try {
@@ -618,6 +629,9 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
     log.error(
       "LIVE trading cycle aborted: Binance order/position state could not be verified",
     );
+    if (shouldArmLiveClaimAfterClose({ closed })) {
+      armLiveClaimAfterClose(venue, ctx);
+    }
     return {
       enabled: 0,
       considered: 0,
@@ -637,6 +651,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
   const enabled = await prisma.strategy.findMany({ where: { enabled: true } });
   if (enabled.length === 0) {
     log.info("no enabled strategies; live trader is idle");
+    await applyLiveCloseFollowup(venue, ctx, closed);
     return { enabled: 0, considered: 0, submitted: 0, open: await countOpenLivePositions() };
   }
 
@@ -1222,6 +1237,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           await clearPendingFlip(row.id, market.id);
         }
         if (result.placed && action === "EXIT") {
+          closed += 1;
           if (managementExit && (managementExit.kind === "TAKE_PROFIT" || managementExit.kind === "TRAILING_STOP")) {
             await redis.set(
               managementLockKey(row.id, market.id),
@@ -1259,20 +1275,15 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
   }
 
   try {
-    const applied = await syncLiveOrdersFromVenue(venue, ctx.walletAddress);
-    log.info({ applied }, "live reconcile");
-    // REST is the authoritative account-state source for Prediction trading.
-    // Re-read venue inventory immediately after reconciliation so the DB
-    // reflects the actual Binance shares/PnL before the next cycle.
-    const venueSync = await syncLivePositionsFromVenue(venue, ctx, { claim: false });
-    log.info(venueSync, "live venue position sync after reconcile");
     const flattenRetries = await retryLiveFlattening(ctx, venue);
-    if (flattenRetries > 0) log.info({ flattenRetries }, "live flatten retries");
+    if (flattenRetries > 0) {
+      log.info({ flattenRetries }, "live flatten retries");
+      closed += flattenRetries;
+    }
   } catch (error) {
-    log.warn({ err: String(error) }, "live reconcile skipped");
+    log.warn({ err: String(error) }, "live flatten retries skipped");
   }
-
-  scheduleLiveClaim(venue, ctx);
+  await applyLiveCloseFollowup(venue, ctx, closed);
 
   const open = await countOpenLivePositions();
   const slotUsage = await liveSlotUsage();

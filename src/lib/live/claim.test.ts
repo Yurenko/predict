@@ -24,7 +24,7 @@ function claim(over: Record<string, unknown> = {}) {
 }
 
 describe("shouldClaimPosition", () => {
-  it("waits one minute after the expired close", () => {
+  it("waits 30 seconds after the expired close", () => {
     expect(
       shouldClaimPosition({
         now,
@@ -76,7 +76,7 @@ describe("shouldClaimPosition", () => {
     ).toBe(false);
   });
 
-  it("manual claim skips the one-minute timer when Binance already lists it", () => {
+  it("manual claim skips the delay when Binance already lists it", () => {
     expect(
       shouldClaimPosition({
         now,
