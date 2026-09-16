@@ -32,6 +32,7 @@ export async function fetchOfficialPaperQuoteResult(options: {
   slippageBps: number;
   orderType?: "MARKET" | "LIMIT";
   priceLimit?: number;
+  urgent?: boolean;
 }): Promise<{ quote: PaperQuote | null; exceededShares: boolean }> {
   const wallet = env.BINANCE_PREDICTION_WALLET_ADDRESS.trim();
   if (!wallet) {
@@ -45,23 +46,26 @@ export async function fetchOfficialPaperQuoteResult(options: {
   }
   try {
     const orderType = options.orderType === "LIMIT" ? "LIMIT" : "MARKET";
-    const official = await client.getQuote({
-      walletAddress: wallet,
-      tokenId: options.tokenId,
-      side: options.side as GetQuoteParams["side"],
-      amountIn: quoteAmountInWei({
-        side: options.side,
-        amountUsdt: options.amountUsdt,
-        amountShares: options.amountShares,
-      }),
-      orderType: orderType as GetQuoteParams["orderType"],
-      slippageBps: Math.min(Math.max(Math.trunc(options.slippageBps), 1), 10_000),
-      chainId: env.BINANCE_PREDICTION_CHAIN_ID,
-      fundingSource: "MPC",
-      ...(orderType === "LIMIT" && options.priceLimit != null && options.priceLimit > 0
-        ? { priceLimit: options.priceLimit.toFixed(8) }
-        : {}),
-    });
+    const official = await client.getQuote(
+      {
+        walletAddress: wallet,
+        tokenId: options.tokenId,
+        side: options.side as GetQuoteParams["side"],
+        amountIn: quoteAmountInWei({
+          side: options.side,
+          amountUsdt: options.amountUsdt,
+          amountShares: options.amountShares,
+        }),
+        orderType: orderType as GetQuoteParams["orderType"],
+        slippageBps: Math.min(Math.max(Math.trunc(options.slippageBps), 1), 10_000),
+        chainId: env.BINANCE_PREDICTION_CHAIN_ID,
+        fundingSource: "MPC",
+        ...(orderType === "LIMIT" && options.priceLimit != null && options.priceLimit > 0
+          ? { priceLimit: options.priceLimit.toFixed(8) }
+          : {}),
+      },
+      options.urgent ? { urgent: true } : undefined,
+    );
     inc("quote.ok");
     return {
       quote: {
@@ -85,6 +89,7 @@ export async function fetchOfficialPaperQuote(options: {
   amountUsdt?: number;
   amountShares?: number;
   slippageBps: number;
+  urgent?: boolean;
 }): Promise<PaperQuote | null> {
   const { quote } = await fetchOfficialPaperQuoteResult(options);
   return quote;

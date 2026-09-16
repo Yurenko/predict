@@ -18,6 +18,7 @@ export async function quoteLiveExitSell(options: {
   lastPrice: number | null;
   avgPrice: number;
   slippageBps: number;
+  urgent?: boolean;
 }): Promise<LiveExitQuoteResult> {
   const shares = Number.isFinite(options.shares) ? Math.max(0, options.shares) : 0;
   if (!(shares > 0)) {
@@ -47,6 +48,7 @@ export async function quoteLiveExitSell(options: {
     amountUsdt: notional,
     slippageBps: options.slippageBps,
     orderType: "MARKET",
+    urgent: options.urgent === true,
   });
 
   if (first.quote) {

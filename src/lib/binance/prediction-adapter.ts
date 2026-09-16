@@ -137,33 +137,36 @@ export class OfficialPredictionAdapter implements BinancePredictionAdapter {
     );
   }
 
-  async getQuote(params: GetQuoteParams): Promise<OfficialQuote> {
+  async getQuote(params: GetQuoteParams, options?: { urgent?: boolean }): Promise<OfficialQuote> {
     if (params.feeRateBps !== undefined) {
       throw new Error(
         "Do not pass feeRateBps into getQuote; use the feeRateBps returned by Binance.",
       );
     }
-    const data = await this.call(() => this.client.restAPI.getQuote(params));
+    const data = await this.call(() => this.client.restAPI.getQuote(params), options);
     return mapOfficialQuote(data);
   }
 
-  async placeOrder(params: PlaceOrderParams): Promise<W3WPredictionRestAPI.PlaceOrderResponse> {
+  async placeOrder(
+    params: PlaceOrderParams,
+    options?: { urgent?: boolean },
+  ): Promise<W3WPredictionRestAPI.PlaceOrderResponse> {
     if (!isLiveTradingEnabled()) {
       throw new Error("placeOrder refused: LIVE_TRADING_ENABLED=true and TRADING_MODE=LIVE are required");
     }
-    return this.call(() => this.client.restAPI.placeOrder(params));
+    return this.call(() => this.client.restAPI.placeOrder(params), options);
   }
 
-  queryOrderHistory(params: QueryOrderHistoryParams) {
-    return this.call(() => this.client.restAPI.queryOrderHistory(params));
+  queryOrderHistory(params: QueryOrderHistoryParams, options?: { urgent?: boolean }) {
+    return this.call(() => this.client.restAPI.queryOrderHistory(params), options);
   }
 
   queryActiveOrders(params: QueryActiveOrdersParams) {
     return this.call(() => this.client.restAPI.queryActiveOrders(params));
   }
 
-  queryPositions(params: QueryPositionsParams) {
-    return this.call(() => this.client.restAPI.queryPositions(params));
+  queryPositions(params: QueryPositionsParams, options?: { urgent?: boolean }) {
+    return this.call(() => this.client.restAPI.queryPositions(params), options);
   }
 
   querySettledPositionHistory(params: QuerySettledPositionHistoryParams) {
@@ -218,10 +221,11 @@ export class OfficialPredictionAdapter implements BinancePredictionAdapter {
 
   private async call<T>(
     execute: () => Promise<{ data: () => Promise<T> }>,
+    options?: { urgent?: boolean },
   ): Promise<T> {
     return withRetries(
       async () => {
-        await this.limiter.wait();
+        if (!options?.urgent) await this.limiter.wait();
         const response = await execute();
         return response.data();
       },

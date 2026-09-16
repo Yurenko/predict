@@ -55,6 +55,8 @@ export interface PaperTradeRequest {
   exitIntent?: string;
   /** Flip ENTER after an EXIT may ignore the usual min-time-to-expiry rail. */
   ignoreMinTimeToExpiry?: boolean;
+  /** Skip the 4s prediction REST spacing for this placeOrder (flip follow-through). */
+  urgentRest?: boolean;
 }
 
 export type PaperExecutionStage = "immediate" | "submit" | "fill";

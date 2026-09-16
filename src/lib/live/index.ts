@@ -7,6 +7,11 @@ export { resolveWalletId } from "@/lib/live/wallet";
 export { applyOfficialLiveOrder, officialLiveOrderNeedsApply, reconcileLiveOrders, releaseStaleLiveInflight, syncLiveOrdersFromVenue } from "@/lib/live/reconcile";
 export { closeLivePosition } from "@/lib/live/close";
 export { armLiveClaimAfterClose, refreshLiveAccountAfterClose } from "@/lib/live/after-close";
+export {
+  confirmLiveFlipExit,
+  liveFlipExitConfirmResult,
+  shouldImmediateFlipEnter,
+} from "@/lib/live/flip-followthrough";
 export { claimLiveWinnings, syncLivePositionsFromVenue } from "@/lib/live/venue-sync";
 export {
   LIVE_INVENTORY_TABS,

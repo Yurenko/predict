@@ -6,16 +6,21 @@ export async function readVenueTradableShares(
   venue: {
     queryPositions: (
       params: W3WPredictionRestAPI.QueryPositionsRequest,
+      extra?: { urgent?: boolean },
     ) => Promise<W3WPredictionRestAPI.QueryPositionsResponse>;
   },
   walletAddress: string,
   tokenId: string,
+  options?: { urgent?: boolean },
 ): Promise<number | null> {
-  const page = await venue.queryPositions({
-    walletAddress,
-    tab: "ONGOING",
-    limit: 100,
-  });
+  const page = await venue.queryPositions(
+    {
+      walletAddress,
+      tab: "ONGOING",
+      limit: 100,
+    },
+    options,
+  );
   for (const row of page.positions ?? []) {
     const mapped = mapVenuePosition(row);
     if (mapped.tokenId !== tokenId) continue;

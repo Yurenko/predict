@@ -17,7 +17,10 @@ import { LIVE_MIN_ORDER_USDT, maxLiveEnterNotional } from "@/lib/live/notional";
 import { inc } from "@/lib/observability/metrics";
 
 export interface LiveVenue {
-  placeOrder(params: PlaceOrderParams): Promise<{ orderId?: string }>;
+  placeOrder(
+    params: PlaceOrderParams,
+    options?: { urgent?: boolean },
+  ): Promise<{ orderId?: string }>;
 }
 
 export interface LiveTradeContext {
@@ -180,7 +183,7 @@ export async function executeLiveTrade(
       });
 
   try {
-    const placed = await venue.placeOrder(body);
+    const placed = await venue.placeOrder(body, request.urgentRest ? { urgent: true } : undefined);
     if (!placed.orderId) {
       return fail(key, OrderStatus.FAILED, "missing_venue_order_id", side, true, decision);
     }
