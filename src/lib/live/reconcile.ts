@@ -539,9 +539,10 @@ export async function syncLiveOrdersFromVenue(
     data: { status: OrderStatus.SUBMITTED, terminalAt: null },
   });
 
+  // Binance rejects limit values outside 1–50 as malformed ("Mandatory parameter 'limit'...").
   const [history, active] = await Promise.all([
-    venue.queryOrderHistory({ walletAddress, limit: 200 }),
-    venue.queryActiveOrders({ walletAddress, limit: 200 }),
+    venue.queryOrderHistory({ walletAddress, limit: 50 }),
+    venue.queryActiveOrders({ walletAddress, limit: 50 }),
   ]);
   const applied = await reconcileLiveOrders({ history, active });
   const seenVenueOrderIds = new Set([
