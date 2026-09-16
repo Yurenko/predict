@@ -53,6 +53,8 @@ export interface PaperTradeRequest {
   priceLimit?: number;
   /** Shown on the Orders tab: EXIT BUY / EXIT SELL. */
   exitIntent?: string;
+  /** Flip ENTER after an EXIT may ignore the usual min-time-to-expiry rail. */
+  ignoreMinTimeToExpiry?: boolean;
 }
 
 export type PaperExecutionStage = "immediate" | "submit" | "fill";
@@ -253,6 +255,7 @@ export function executePaperTrade(
       quoteExpireAt: resolvedQuote.quote.expireAt,
       dataAgeMs: request.book.dataAgeMs,
       proposedFillPrice: resolvedQuote.fillPrice,
+      ignoreMinTimeToExpiry: request.ignoreMinTimeToExpiry,
     },
     riskState,
     limits,

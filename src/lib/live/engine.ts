@@ -148,6 +148,7 @@ export async function executeLiveTrade(
       quoteExpireAt: quoteCheck.quote.expireAt,
       dataAgeMs: request.book.dataAgeMs,
       proposedFillPrice: quoteCheck.fillPrice,
+      ignoreMinTimeToExpiry: request.ignoreMinTimeToExpiry,
     },
     riskState,
     limits,

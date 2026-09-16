@@ -204,6 +204,7 @@ export function evaluateRisk(
 
   const tteMinOk =
     !entry ||
+    intent.ignoreMinTimeToExpiry === true ||
     intent.timeToExpirySec === null ||
     intent.timeToExpirySec >= limits.minTimeToExpirySec;
   checks.push(

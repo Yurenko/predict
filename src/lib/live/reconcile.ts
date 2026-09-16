@@ -1,6 +1,7 @@
 import { OrderStatus, PositionStatus, Prisma, TradingMode } from "@prisma/client";
 import type { W3WPredictionRestAPI } from "@binance/w3w-prediction";
 import { prisma } from "@/lib/db/prisma";
+import { env } from "@/lib/config/env";
 import { asNumber } from "@/lib/normalize/numbers";
 import { childLogger } from "@/lib/logger";
 import { feeAmountToUsdt } from "@/lib/paper/quote-validate";
@@ -8,6 +9,8 @@ import { mapOfficialOrderStatus } from "@/lib/live/status";
 import {
   applyLiveFillToPosition,
   completeOfficialFill,
+  LIVE_INFLIGHT_STATUSES,
+  shouldReleaseStaleLiveInflight,
   type LivePositionSnapshot,
 } from "@/lib/live/position-fill";
 import { clearLiveFlatten } from "@/lib/live/flatten";
@@ -455,6 +458,68 @@ export async function reconcileLiveOrders(options: {
   return applied;
 }
 
+function venueOrderIds(rows: OfficialOrder[] | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const row of rows ?? []) {
+    if (row.orderId) ids.add(row.orderId);
+  }
+  return ids;
+}
+
+/** Drop local LIVE inflight rows that Binance no longer reports, so flip is not deadlocked. */
+export async function releaseStaleLiveInflight(options: {
+  now: Date;
+  seenVenueOrderIds: Set<string>;
+  staleMs?: number;
+}): Promise<number> {
+  const rows = await prisma.order.findMany({
+    where: { mode: TradingMode.LIVE, status: { in: LIVE_INFLIGHT_STATUSES } },
+    select: {
+      id: true,
+      venueOrderId: true,
+      submittedAt: true,
+      createdAt: true,
+      rawPayload: true,
+    },
+  });
+  let released = 0;
+  for (const row of rows) {
+    const seenOnVenue = Boolean(
+      row.venueOrderId && options.seenVenueOrderIds.has(row.venueOrderId),
+    );
+    if (
+      !shouldReleaseStaleLiveInflight({
+        submittedAt: row.submittedAt,
+        createdAt: row.createdAt,
+        now: options.now,
+        seenOnVenue,
+        staleMs: options.staleMs ?? env.LIVE_INFLIGHT_STALE_MS,
+      })
+    ) {
+      continue;
+    }
+    const payload =
+      row.rawPayload && typeof row.rawPayload === "object" && !Array.isArray(row.rawPayload)
+        ? { ...(row.rawPayload as Record<string, unknown>) }
+        : {};
+    payload.staleInflightReleased = true;
+    await prisma.order.update({
+      where: { id: row.id },
+      data: {
+        status: OrderStatus.FAILED,
+        terminalAt: options.now,
+        rawPayload: payload as Prisma.InputJsonValue,
+      },
+    });
+    released += 1;
+    log.warn(
+      { orderId: row.id, venueOrderId: row.venueOrderId },
+      "stale live inflight released",
+    );
+  }
+  return released;
+}
+
 export async function syncLiveOrdersFromVenue(
   venue: {
     queryOrderHistory: (
@@ -475,8 +540,20 @@ export async function syncLiveOrdersFromVenue(
   });
 
   const [history, active] = await Promise.all([
-    venue.queryOrderHistory({ walletAddress, limit: 50 }),
-    venue.queryActiveOrders({ walletAddress, limit: 50 }),
+    venue.queryOrderHistory({ walletAddress, limit: 200 }),
+    venue.queryActiveOrders({ walletAddress, limit: 200 }),
   ]);
-  return reconcileLiveOrders({ history, active });
+  const applied = await reconcileLiveOrders({ history, active });
+  const seenVenueOrderIds = new Set([
+    ...venueOrderIds(history.orders),
+    ...venueOrderIds(active.orders),
+  ]);
+  const released = await releaseStaleLiveInflight({
+    now: new Date(),
+    seenVenueOrderIds,
+  });
+  if (released > 0) {
+    log.warn({ released }, "stale live inflight orders failed locally");
+  }
+  return applied;
 }

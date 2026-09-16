@@ -3,13 +3,12 @@ import type { PaperQuote } from "@/lib/paper/quote-validate";
 import { liveExitCoverNotional, liveFlattenExitPrice } from "@/lib/live/notional";
 
 export type LiveExitQuoteResult =
-  | { quote: PaperQuote; notional: number; priceLimit: number; belowMin: false }
+  | { quote: PaperQuote; notional: number; priceLimit: number | null; belowMin: false }
   | { quote: null; notional: number; belowMin: boolean; exceeded: boolean };
 
 /**
- * One LIMIT GTC SELL for the full leftover stack.
- * getQuote SELL amountIn is shares (same as the Binance Max button), not USDT.
- * MARKET FOK only takes the top of the book and leaves shares.
+ * MARKET FOK SELL for the full leftover stack (same size as the Binance Max button).
+ * getQuote SELL amountIn is shares, not USDT.
  */
 export async function quoteLiveExitSell(options: {
   tokenId: string;
@@ -25,7 +24,7 @@ export async function quoteLiveExitSell(options: {
     return { quote: null, notional: 0, belowMin: true, exceeded: false };
   }
 
-  const priceLimit = liveFlattenExitPrice({
+  const fillPrice = liveFlattenExitPrice({
     positionSide: "BUY",
     bestBid: options.bestBid,
     bestAsk: options.bestAsk,
@@ -33,11 +32,10 @@ export async function quoteLiveExitSell(options: {
     avgPrice: options.avgPrice,
     aggressive: false,
   });
-  if (!(priceLimit > 0)) {
-    return { quote: null, notional: 0, belowMin: true, exceeded: false };
-  }
-
-  const notional = liveExitCoverNotional(shares, priceLimit);
+  const notional = liveExitCoverNotional(
+    shares,
+    fillPrice > 0 ? fillPrice : options.avgPrice,
+  );
   if (!(notional > 0)) {
     return { quote: null, notional: 0, belowMin: true, exceeded: false };
   }
@@ -48,12 +46,11 @@ export async function quoteLiveExitSell(options: {
     amountShares: shares,
     amountUsdt: notional,
     slippageBps: options.slippageBps,
-    orderType: "LIMIT",
-    priceLimit,
+    orderType: "MARKET",
   });
 
   if (first.quote) {
-    return { quote: first.quote, notional, priceLimit, belowMin: false };
+    return { quote: first.quote, notional, priceLimit: null, belowMin: false };
   }
 
   return {

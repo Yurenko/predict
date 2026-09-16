@@ -9,6 +9,7 @@ import {
   PAPER_INFLIGHT_STATUSES,
   reservedLivePositionCount,
   shouldDeferLiveEnter,
+  shouldReleaseStaleLiveInflight,
   type LivePositionSnapshot,
 } from "./position-fill";
 
@@ -125,6 +126,35 @@ describe("LIVE partial order state", () => {
   it("does not use PARTIALLY_FILLED as a LIVE inflight status", () => {
     expect(LIVE_INFLIGHT_STATUSES.map(String)).not.toContain(OrderStatus.PARTIALLY_FILLED);
     expect(PAPER_INFLIGHT_STATUSES.map(String)).toContain(OrderStatus.PARTIALLY_FILLED);
+  });
+
+  it("releases a local SUBMITTED only when Binance stopped reporting it", () => {
+    const now = new Date("2026-09-16T12:02:00Z");
+    const createdAt = new Date("2026-09-16T12:00:00Z");
+    expect(
+      shouldReleaseStaleLiveInflight({
+        submittedAt: createdAt,
+        createdAt,
+        now,
+        seenOnVenue: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldReleaseStaleLiveInflight({
+        submittedAt: createdAt,
+        createdAt,
+        now,
+        seenOnVenue: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldReleaseStaleLiveInflight({
+        submittedAt: new Date("2026-09-16T12:01:30Z"),
+        createdAt,
+        now,
+        seenOnVenue: false,
+      }),
+    ).toBe(false);
   });
 
   it("treats a one-cent flatten residual as dust without closing the position", () => {

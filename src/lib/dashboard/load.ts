@@ -20,7 +20,7 @@ import { lastExecutableSides } from "@/lib/ingest/orderbook-merge";
 import { heldOrTradableMarketQuery, marketHeadline } from "@/lib/markets/horizon";
 import { newerPaperCycle, readPaperCycle, type PaperCycle } from "@/lib/paper/cycle";
 import { DEFAULT_PAPER_ENTRY_MODE } from "@/lib/paper/entry-mode";
-import { DEFAULT_LIVE_BINARY_MODE } from "@/lib/live/binary-mode";
+import { DEFAULT_LIVE_BINARY_MODE, readLiveBinaryMode } from "@/lib/live/binary-mode";
 import { recordAccount, readRecordControl } from "@/lib/record/control";
 import { isPidAlive } from "@/lib/record/types";
 import { CURRENT_PHASE } from "@/lib/types/domain";
@@ -222,6 +222,11 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       payload.record.paper = redactPaperCycle(newerPaperCycle(control.paper, paperCycle));
     } catch {
       // ignore
+    }
+    try {
+      payload.liveBinaryMode = await readLiveBinaryMode();
+    } catch {
+      payload.liveBinaryMode = DEFAULT_LIVE_BINARY_MODE;
     }
   }
 

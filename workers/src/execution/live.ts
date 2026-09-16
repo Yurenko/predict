@@ -34,8 +34,8 @@ import {
 } from "@/lib/live";
 import { invertBinaryBook, resolveBinaryWorkerTrade } from "@/lib/live/binary";
 import {
-  DEFAULT_LIVE_BINARY_MODE,
   liveOppositeCloses,
+  liveStrategyParams,
   readLiveBinaryMode,
   shouldBlockLiveFlipEnter,
 } from "@/lib/live/binary-mode";
@@ -256,8 +256,7 @@ async function retryLiveFlattening(
       positionSide: row.side,
       positionId: row.id,
       orderSide: OrderSide.SELL,
-      orderType: "LIMIT",
-      priceLimit: exitQuote.priceLimit,
+      orderType: "MARKET",
       exitIntent: exitIntentFromOutcome(row.outcome?.name),
       idempotencyWindowMs: env.LIVE_IDEMPOTENCY_MS,
       idempotencySalt: `flatten-retry-${shares.toFixed(8)}-${Math.floor(now.getTime() / 5_000)}`,
@@ -269,8 +268,8 @@ async function retryLiveFlattening(
     await persistPaperTrade({ request, result, signal });
     submitted += 1;
     log.info(
-      { positionId: row.id, tokenId: row.tokenId, shares, priceLimit: exitQuote.priceLimit, venueOrderId: result.venueOrderId },
-      "live flatten retry submitted",
+        { positionId: row.id, tokenId: row.tokenId, shares, venueOrderId: result.venueOrderId },
+        "live flatten retry submitted",
     );
   }
   return submitted;
@@ -524,8 +523,7 @@ export async function runLiveRealtimePositionManagement(
         positionSide: position.side,
         positionId: position.id,
         orderSide: OrderSide.SELL,
-        orderType: "LIMIT",
-        priceLimit: exitQuote.priceLimit,
+        orderType: "MARKET",
         exitIntent: decision.kind === "TAKE_PROFIT" ? "TAKE_PROFIT" : "TRAILING_STOP",
         idempotencyWindowMs: env.LIVE_IDEMPOTENCY_MS,
         idempotencySalt: `realtime-${decision.kind}-${shares.toFixed(8)}`,
@@ -725,12 +723,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
     }
 
     for (const row of enabled) {
-      const params = (row.parameters ?? {}) as Record<string, unknown>;
-      const strategy = createStrategy(row.slug, params);
-      if (!strategy) continue;
-      const signal = strategy.evaluate(ctxStrategy);
-      const tteSec = ctxStrategy.timeToExpirySec;
-
       // Position management runs independently of entry-signal availability.
       // This is important for LIVE: a profitable position must be able to take
       // profit even when the strategy does not emit a fresh signal on this tick.
@@ -750,6 +742,15 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         tradableOpens.find((item) => !outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
       const openDown =
         tradableOpens.find((item) => outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
+      let pending = oppositeCloses ? await readPendingFlip(row.id, market.id) : null;
+      const params = liveStrategyParams({
+        parameters: (row.parameters ?? {}) as Record<string, unknown>,
+        keepSignallingNearExpiry:
+          oppositeCloses && Boolean(openUp || openDown || pending),
+      });
+      const strategy = createStrategy(row.slug, params);
+      if (!strategy) continue;
+      const signal = strategy.evaluate(ctxStrategy);
 
       let managementExit: {
         positionId: string;
@@ -830,7 +831,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         }
       }
 
-      let pending = oppositeCloses ? await readPendingFlip(row.id, market.id) : null;
       if (pending && shouldCancelPendingFlip(pending.side, signal?.direction)) {
         log.info(
           { slug: row.slug, market: market.venueMarketId, pending: pending.side, signal: signal?.direction },
@@ -838,14 +838,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         );
         await clearPendingFlip(row.id, market.id);
         pending = null;
-      }
-      const tooCloseToExpiry =
-        isExpiredAt(now, market.topic.endDate) ||
-        (tteSec != null && tteSec < limits.minTimeToExpirySec);
-      if (pending && tooCloseToExpiry) {
-        await clearPendingFlip(row.id, market.id);
-        pending = null;
-        skips.tte += 1;
       }
       if (!signal && !pending && !managementExit) {
         skips.noSignal += 1;
@@ -1064,7 +1056,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
       let quotedNotional: number;
       let quote: PaperQuote | null = null;
       let exitShares = open ? Number(open.shares) : 0;
-      let exitPriceLimit: number | undefined;
       const exitIntent =
         action === "EXIT" ? exitIntentFromOutcome(open?.outcome?.name ?? null) : undefined;
       if (action === "EXIT" && open) {
@@ -1108,7 +1099,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         }
         quote = exitQuote.quote;
         quotedNotional = exitQuote.notional;
-        exitPriceLimit = exitQuote.priceLimit;
       } else {
         // Flip Down after a closed Up uses the same bankroll ticket, not leftover Up shares.
         quotedNotional = clipLiveOrderNotional({
@@ -1158,6 +1148,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           estimatedPriceImpact: null,
           quoteExpireAt: null,
           dataAgeMs,
+          ignoreMinTimeToExpiry: action === "ENTER" && Boolean(pending),
         },
         riskState,
         limits,
@@ -1201,11 +1192,11 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         positionSide: open?.side,
         positionId: open?.id,
         orderSide: trade.orderSide,
-        orderType: action === "EXIT" ? "LIMIT" : "MARKET",
-        priceLimit: exitPriceLimit,
+        orderType: "MARKET",
         exitIntent,
         idempotencyWindowMs: env.LIVE_IDEMPOTENCY_MS,
         idempotencySalt: action === "EXIT" ? `flat-${exitShares.toFixed(6)}` : undefined,
+        ignoreMinTimeToExpiry: action === "ENTER" && Boolean(pending),
       };
 
       const result = await executeLiveTrade(request, riskState, limits, venue, ctx);

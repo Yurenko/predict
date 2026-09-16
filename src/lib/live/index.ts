@@ -4,7 +4,7 @@ export { assertLiveExecution, assertPaperWorkerNotLive } from "@/lib/live/gate";
 export { buildLimitPlaceOrder, buildMarketPlaceOrder, formatLimitPrice } from "@/lib/live/place";
 export { mapOfficialOrderStatus } from "@/lib/live/status";
 export { resolveWalletId } from "@/lib/live/wallet";
-export { applyOfficialLiveOrder, reconcileLiveOrders, syncLiveOrdersFromVenue } from "@/lib/live/reconcile";
+export { applyOfficialLiveOrder, reconcileLiveOrders, releaseStaleLiveInflight, syncLiveOrdersFromVenue } from "@/lib/live/reconcile";
 export { closeLivePosition } from "@/lib/live/close";
 export { claimLiveWinnings, syncLivePositionsFromVenue } from "@/lib/live/venue-sync";
 export {
@@ -29,6 +29,7 @@ export {
   LIVE_BINARY_MODE_KEY,
   LIVE_BINARY_MODE_KEY_LEGACY,
   liveOppositeCloses,
+  liveStrategyParams,
   parseLiveBinaryMode,
   readLiveBinaryMode,
   shouldBlockLiveFlipEnter,
@@ -59,5 +60,7 @@ export {
   completeOfficialFill,
   reservedLivePositionCount,
   shouldDeferLiveEnter,
+  shouldReleaseStaleLiveInflight,
   LIVE_INFLIGHT_STATUSES,
+  DEFAULT_LIVE_INFLIGHT_STALE_MS,
 } from "@/lib/live/position-fill";

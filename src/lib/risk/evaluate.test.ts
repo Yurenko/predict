@@ -127,6 +127,13 @@ describe("evaluateRisk", () => {
       evaluateRisk(intent({ requestedNotional: 50 }), state(lim, { openNotional: 980 }), lim).allowed,
     ).toBe(false);
     expect(evaluateRisk(intent({ timeToExpirySec: 10 }), state(lim), lim).allowed).toBe(false);
+    expect(
+      evaluateRisk(
+        intent({ timeToExpirySec: 10, ignoreMinTimeToExpiry: true }),
+        state(lim),
+        lim,
+      ).allowed,
+    ).toBe(true);
     expect(evaluateRisk(intent({ timeToExpirySec: 200_000 }), state(lim), lim).allowed).toBe(
       false,
     );

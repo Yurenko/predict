@@ -227,6 +227,10 @@ describe("executeLiveTrade", () => {
     expect(result.placed).toBe(true);
     expect(result.venueOrderId).toBe("ord-exit");
     expect(placeOrder).toHaveBeenCalledTimes(1);
+    expect(placeOrder.mock.calls[0]?.[0]).toMatchObject({
+      orderType: "MARKET",
+      timeInForce: "FOK",
+    });
   });
 
   it("places EXIT as LIMIT GTC labeled EXIT BUY", async () => {

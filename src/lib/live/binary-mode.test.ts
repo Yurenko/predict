@@ -2,14 +2,30 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LIVE_BINARY_MODE,
   liveOppositeCloses,
+  liveStrategyParams,
   parseLiveBinaryMode,
   shouldBlockLiveFlipEnter,
 } from "./binary-mode";
 
 describe("live binary mode", () => {
-  it("defaults to independent so Live does not force-close on every opposite signal", () => {
-    expect(DEFAULT_LIVE_BINARY_MODE).toBe("independent");
-    expect(parseLiveBinaryMode(null) ?? DEFAULT_LIVE_BINARY_MODE).toBe("independent");
+  it("defaults to flip so Live closes on an opposite signal like Paper", () => {
+    expect(DEFAULT_LIVE_BINARY_MODE).toBe("flip");
+    expect(parseLiveBinaryMode(null) ?? DEFAULT_LIVE_BINARY_MODE).toBe("flip");
+  });
+
+  it("keeps strategy signals near expiry only when a flip is already in play", () => {
+    expect(
+      liveStrategyParams({
+        parameters: { minTimeToExpirySec: 60 },
+        keepSignallingNearExpiry: false,
+      }).minTimeToExpirySec,
+    ).toBe(60);
+    expect(
+      liveStrategyParams({
+        parameters: { minTimeToExpirySec: 60 },
+        keepSignallingNearExpiry: true,
+      }).minTimeToExpirySec,
+    ).toBe(0);
   });
 
   it("parses independent vs flip", () => {

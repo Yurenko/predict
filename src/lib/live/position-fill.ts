@@ -7,6 +7,23 @@ export const LIVE_INFLIGHT_STATUSES: OrderStatus[] = [
   OrderStatus.SUBMITTED,
 ];
 
+/** Local LIVE SUBMITTED with no venue row is released after this so flip is not deadlocked. */
+export const DEFAULT_LIVE_INFLIGHT_STALE_MS = 120_000;
+
+export function shouldReleaseStaleLiveInflight(options: {
+  submittedAt: Date | null;
+  createdAt: Date;
+  now: Date;
+  seenOnVenue: boolean;
+  staleMs?: number;
+}): boolean {
+  if (options.seenOnVenue) return false;
+  const started = options.submittedAt ?? options.createdAt;
+  const ageMs = options.now.getTime() - started.getTime();
+  const staleMs = options.staleMs ?? DEFAULT_LIVE_INFLIGHT_STALE_MS;
+  return Number.isFinite(ageMs) && ageMs >= staleMs;
+}
+
 /** PAPER keeps PARTIALLY_FILLED because the simulator intentionally models partial fills. */
 export const PAPER_INFLIGHT_STATUSES: OrderStatus[] = [
   OrderStatus.PENDING,

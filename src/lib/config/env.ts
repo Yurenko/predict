@@ -87,6 +87,11 @@ const envSchema = z.object({
   PAPER_IDEMPOTENCY_MS: z.coerce.number().int().positive().default(5_000),
   LIVE_LOOP_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   LIVE_IDEMPOTENCY_MS: z.coerce.number().int().positive().default(5_000),
+  LIVE_BINARY_MODE: z.preprocess(
+    (value) => (value === "" || value == null ? undefined : value),
+    z.enum(["independent", "flip"]).optional(),
+  ),
+  LIVE_INFLIGHT_STALE_MS: z.coerce.number().int().positive().default(120_000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });

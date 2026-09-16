@@ -1,12 +1,13 @@
+import { env } from "@/lib/config/env";
 import { redis } from "@/lib/db/redis";
 import { childLogger } from "@/lib/logger";
 import type { PaperAction } from "@/lib/paper/action";
 
-/** LIVE defaults to independent legs so a new signal does not force-close a profitable/loss-making leg. */
+/** LIVE defaults to Paper-style flip: opposite signal closes the held leg first. */
 export const LIVE_BINARY_MODE_KEY = "control:live-binary-mode.v2";
 export const LIVE_BINARY_MODE_KEY_LEGACY = "control:live-binary-mode";
 export type LiveBinaryMode = "independent" | "flip";
-export const DEFAULT_LIVE_BINARY_MODE: LiveBinaryMode = "independent";
+export const DEFAULT_LIVE_BINARY_MODE: LiveBinaryMode = "flip";
 
 const log = childLogger({ component: "live-binary-mode" });
 
@@ -33,8 +34,26 @@ export function shouldBlockLiveFlipEnter(options: {
   return options.stillOpen || options.inflightOnMarket;
 }
 
+/**
+ * Flip keeps emitting until endDate. A first ENTER on an empty market still
+ * uses the strategy's normal minTimeToExpirySec (usually 60s).
+ */
+export function liveStrategyParams(options: {
+  parameters: Record<string, unknown>;
+  keepSignallingNearExpiry: boolean;
+}): Record<string, unknown> {
+  if (!options.keepSignallingNearExpiry) return { ...options.parameters };
+  return { ...options.parameters, minTimeToExpirySec: 0 };
+}
+
 export async function readLiveBinaryMode(): Promise<LiveBinaryMode> {
+  const fromEnv = parseLiveBinaryMode(env.LIVE_BINARY_MODE);
   try {
+    if (fromEnv) {
+      await redis.set(LIVE_BINARY_MODE_KEY, fromEnv);
+      await redis.del(LIVE_BINARY_MODE_KEY_LEGACY);
+      return fromEnv;
+    }
     const stored = parseLiveBinaryMode(await redis.get(LIVE_BINARY_MODE_KEY));
     await redis.del(LIVE_BINARY_MODE_KEY_LEGACY);
     const mode = stored ?? DEFAULT_LIVE_BINARY_MODE;
@@ -44,7 +63,7 @@ export async function readLiveBinaryMode(): Promise<LiveBinaryMode> {
     return mode;
   } catch (error) {
     log.warn({ err: String(error) }, "live binary mode redis read failed");
-    return DEFAULT_LIVE_BINARY_MODE;
+    return fromEnv ?? DEFAULT_LIVE_BINARY_MODE;
   }
 }
 

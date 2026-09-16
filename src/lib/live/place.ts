@@ -34,7 +34,7 @@ export function buildMarketPlaceOrder(draft: LivePlaceDraft): PlaceOrderParams {
   };
 }
 
-/** EXIT flatten: GTC stays on the book until the full amountIn is sold. MARKET FOK cannot. */
+/** Optional LIMIT GTC — LIVE flatten uses MARKET FOK with Max shares instead. */
 export function buildLimitPlaceOrder(
   draft: LivePlaceDraft & { priceLimit: number },
 ): PlaceOrderParams {

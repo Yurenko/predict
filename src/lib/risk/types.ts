@@ -55,6 +55,8 @@ export interface RiskIntent {
   dataAgeMs: number | null;
   /** If set, must be the executable book price — not lastPrice. */
   proposedFillPrice?: number | null;
+  /** Flip re-entry may trade until endDate; first ENTER on an empty market still uses min TTE. */
+  ignoreMinTimeToExpiry?: boolean;
 }
 
 export interface RiskEventDraft {

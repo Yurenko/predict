@@ -113,7 +113,6 @@ export async function closeLivePosition(positionId: string): Promise<
 
   let notional: number;
   let quote;
-  let priceLimit: number | undefined;
   if (row.side === OrderSide.BUY) {
     const exitQuote = await quoteLiveExitSell({
       tokenId: row.tokenId,
@@ -127,7 +126,6 @@ export async function closeLivePosition(positionId: string): Promise<
     if (exitQuote.belowMin || !exitQuote.quote) return { ok: false, reason: "quote_failed" };
     quote = exitQuote.quote;
     notional = exitQuote.notional;
-    priceLimit = exitQuote.priceLimit;
   } else {
     return { ok: false, reason: "quote_failed" };
   }
@@ -161,8 +159,7 @@ export async function closeLivePosition(positionId: string): Promise<
     positionSide: row.side,
     positionId: row.id,
     orderSide: OrderSide.SELL,
-    orderType: "LIMIT",
-    priceLimit,
+    orderType: "MARKET",
     exitIntent: exitIntentFromOutcome(row.outcome?.name),
     idempotencyWindowMs: env.LIVE_IDEMPOTENCY_MS,
     idempotencySalt: `flat-${shares.toFixed(6)}`,
