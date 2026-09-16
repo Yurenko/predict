@@ -92,13 +92,13 @@ export function evaluateLivePositionManagement(options: {
   const config = options.config ?? DEFAULT_LIVE_POSITION_MANAGEMENT;
 
   if (!(currentPrice >= 0 && currentPrice <= 1)) return null;
-  if (timeToExpirySec == null || timeToExpirySec <= config.trailMinTteSec) return null;
+  if (timeToExpirySec == null || timeToExpirySec < config.trailMinTteSec) return null;
 
   // Hard take-profit: independent of entry price. A 0.03 -> 0.23 trade is
   // intentionally NOT forced out here; only the universal 0.98+ rule is.
   if (
     currentPrice >= config.takeProfitPrice &&
-    timeToExpirySec > config.takeProfitMinTteSec
+    timeToExpirySec >= config.takeProfitMinTteSec
   ) {
     return {
       kind: "TAKE_PROFIT",
@@ -147,7 +147,7 @@ export function evaluateLivePositionManagement(options: {
     oppositeSignal &&
     losing &&
     strong &&
-    timeToExpirySec > config.reversalMinTteSec
+    timeToExpirySec >= config.reversalMinTteSec
   ) {
     return {
       kind: "STRONG_REVERSAL",
