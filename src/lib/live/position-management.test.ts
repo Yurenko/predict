@@ -34,7 +34,7 @@ describe("live position management", () => {
       evaluateLivePositionManagement({
         entryPrice: 0.02,
         currentPrice: 0.98,
-        timeToExpirySec: 181,
+        timeToExpirySec: 61,
         isDownPosition: false,
         signal: null,
         state,
@@ -45,7 +45,7 @@ describe("live position management", () => {
       evaluateLivePositionManagement({
         entryPrice: 0.02,
         currentPrice: 0.98,
-        timeToExpirySec: 180,
+        timeToExpirySec: 60,
         isDownPosition: false,
         signal: null,
         state,

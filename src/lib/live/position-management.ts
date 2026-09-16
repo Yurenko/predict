@@ -17,13 +17,13 @@ export interface LivePositionManagementConfig {
 
 export const DEFAULT_LIVE_POSITION_MANAGEMENT: LivePositionManagementConfig = {
   takeProfitPrice: 0.98,
-  takeProfitMinTteSec: 180,
+  takeProfitMinTteSec: 60,
   trailActivationPrice: 0.90,
   trailMinDistance: 0.05,
   trailPercent: 0.08,
   trailMinProfit: 0.03,
   trailMinTteSec: 60,
-  reversalMinTteSec: 180,
+  reversalMinTteSec: 60,
   reversalMinConfidence: 0.70,
   reversalMinNetEdge: 0.05,
   reversalMinLoss: 0.005,
