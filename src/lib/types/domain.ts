@@ -49,6 +49,7 @@ export interface StrategyContext {
   /** Rolling features computed only from observations with t <= now. */
   features: {
     underlyingReturn1m: number | null;
+    underlyingReturn2m: number | null;
     underlyingReturn5m: number | null;
     underlyingReturn15m: number | null;
     probabilityMean: number | null;

@@ -8,11 +8,14 @@ export {
 export {
   createMomentumLagStrategy,
   allowOneMinuteTape,
+  defaultMinReturn2m,
   defaultMinReturn5m,
-  DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC,
+  isFiveMinuteWindow,
   shouldIgnoreReversal1m,
+  shouldIgnoreTape,
   spotWindowSide,
   tapeHorizon,
+  tapeLookbackSec,
 } from "@/lib/strategy/momentum-lag";
 export { createMeanReversionStrategy } from "@/lib/strategy/mean-reversion";
 export { createFairValueStrategy } from "@/lib/strategy/fair-value";

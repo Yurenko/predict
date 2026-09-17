@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { StrategyContext } from "@/lib/types/domain";
 import {
-  allowOneMinuteTape,
   createMomentumLagStrategy,
-  shouldIgnoreReversal1m,
+  shouldIgnoreTape,
   spotWindowSide,
   tapeHorizon,
+  tapeLookbackSec,
 } from "./momentum-lag";
 import { createMeanReversionStrategy } from "./mean-reversion";
 import { createFairValueStrategy } from "./fair-value";
@@ -35,6 +35,7 @@ function ctx(over: Partial<StrategyContext> = {}): StrategyContext {
     volume: 1,
     features: {
       underlyingReturn1m: null,
+      underlyingReturn2m: null,
       underlyingReturn5m: null,
       underlyingReturn15m: null,
       probabilityMean: null,
@@ -45,6 +46,7 @@ function ctx(over: Partial<StrategyContext> = {}): StrategyContext {
     ...over,
     features: {
       underlyingReturn1m: null,
+      underlyingReturn2m: null,
       underlyingReturn5m: null,
       underlyingReturn15m: null,
       probabilityMean: null,
@@ -109,12 +111,12 @@ describe("spotWindowSide", () => {
     ).toBe("up");
   });
 
-  it("follows the 1m reversal after the window already moved the other way", () => {
+  it("follows the 2m reversal after the window already moved the other way", () => {
     expect(
       spotWindowSide({
         startPrice: 100,
         spot: 100.3,
-        return1m: -0.002,
+        return2m: -0.002,
         minVsStart: 0.0005,
         minReturn1m: 0.0003,
         timeToExpirySec: 240,
@@ -125,13 +127,38 @@ describe("spotWindowSide", () => {
       spotWindowSide({
         startPrice: 100,
         spot: 99.7,
-        return1m: 0.002,
+        return2m: 0.002,
         minVsStart: 0.0005,
         minReturn1m: 0.0003,
         timeToExpirySec: 240,
         windowDurationSec: 300,
       })?.side,
     ).toBe("up");
+  });
+
+  it("does not let a 1m wick override a 5m candle; 2m tape can", () => {
+    const oneMinuteNoise = spotWindowSide({
+      startPrice: 100,
+      spot: 100.3,
+      return2m: 0.001,
+      minVsStart: 0.0005,
+      minReturn1m: 0.0003,
+      timeToExpirySec: 240,
+      windowDurationSec: 300,
+    });
+    expect(oneMinuteNoise?.side).toBe("up");
+    expect(oneMinuteNoise?.reason).not.toMatch(/розворот/);
+    const twoMinuteReversal = spotWindowSide({
+      startPrice: 100,
+      spot: 100.3,
+      return2m: -0.002,
+      minVsStart: 0.0005,
+      minReturn1m: 0.0003,
+      timeToExpirySec: 240,
+      windowDurationSec: 300,
+    });
+    expect(twoMinuteReversal?.side).toBe("down");
+    expect(twoMinuteReversal?.reason).toMatch(/розворот 2м/);
   });
 
   it("does not let a 1m wick override a 15m candle; 5m tape can", () => {
@@ -170,53 +197,57 @@ describe("spotWindowSide", () => {
         windowDurationSec: 900,
       }),
     ).toBeNull();
-    expect(tapeHorizon(300)).toBe("1m");
+    expect(tapeHorizon(300)).toBe("2m");
     expect(tapeHorizon(900)).toBe("5m");
-    expect(allowOneMinuteTape(300)).toBe(true);
-    expect(allowOneMinuteTape(900)).toBe(false);
+    expect(tapeLookbackSec("2m")).toBe(120);
+    expect(tapeLookbackSec("5m")).toBe(300);
   });
 
-  it("ignores the 1m reversal in the last 2 minutes and stays on the candle", () => {
+  it("ignores tape in the last block (2m on 5m markets, 5m on 15m) and stays on the candle", () => {
     const late = spotWindowSide({
       startPrice: 100,
       spot: 100.3,
-      return1m: -0.002,
+      return2m: -0.002,
       minVsStart: 0.0005,
       minReturn1m: 0.0003,
       timeToExpirySec: 90,
+      windowDurationSec: 300,
     });
     expect(late?.side).toBe("up");
-    expect(late?.reason).toMatch(/1м розворот ігнор/);
+    expect(late?.reason).toMatch(/2м розворот ігнор/);
     expect(
       spotWindowSide({
         startPrice: 100,
         spot: 99.7,
-        return1m: 0.002,
+        return2m: 0.002,
         minVsStart: 0.0005,
         minReturn1m: 0.0003,
         timeToExpirySec: 0,
+        windowDurationSec: 300,
       })?.side,
     ).toBe("down");
     expect(
       spotWindowSide({
         startPrice: 100,
         spot: 100.3,
-        return1m: 0,
         return5m: -0.002,
         minVsStart: 0.0005,
         minReturn1m: 0.0003,
-        timeToExpirySec: 90,
+        timeToExpirySec: 240,
         windowDurationSec: 900,
       })?.side,
     ).toBe("up");
     expect(
-      shouldIgnoreReversal1m({ timeToExpirySec: 120, ignoreReversal1mWithinSec: 120 }),
+      shouldIgnoreTape({ timeToExpirySec: 120, ignoreWithinSec: 120 }),
     ).toBe(true);
     expect(
-      shouldIgnoreReversal1m({ timeToExpirySec: 121, ignoreReversal1mWithinSec: 120 }),
+      shouldIgnoreTape({ timeToExpirySec: 121, ignoreWithinSec: 120 }),
     ).toBe(false);
     expect(
-      shouldIgnoreReversal1m({ timeToExpirySec: 0, ignoreReversal1mWithinSec: 0 }),
+      shouldIgnoreTape({ timeToExpirySec: 300, ignoreWithinSec: 300 }),
+    ).toBe(true);
+    expect(
+      shouldIgnoreTape({ timeToExpirySec: 301, ignoreWithinSec: 300 }),
     ).toBe(false);
   });
 
@@ -236,7 +267,7 @@ describe("spotWindowSide", () => {
 describe("underlying-momentum-lag", () => {
   const strategy = createMomentumLagStrategy({ safetyMargin: 0 });
 
-  it("buys Up when spot is above this window start and 1m agrees", () => {
+  it("buys Up when spot is above this window start and 2m agrees", () => {
     const signal = strategy.evaluate(
       ctx({
         startPrice: 100,
@@ -245,7 +276,7 @@ describe("underlying-momentum-lag", () => {
         bestBid: 0.44,
         lastPrice: 0.99,
         outcomeName: "Up",
-        features: { underlyingReturn1m: 0.002 } as StrategyContext["features"],
+        features: { underlyingReturn2m: 0.002 } as StrategyContext["features"],
       }),
     );
     expect(signal?.direction).toBe("BUY");
@@ -253,7 +284,7 @@ describe("underlying-momentum-lag", () => {
     expect(signal?.reason).not.toMatch(/0\.99/);
   });
 
-  it("does not flip to a 1m reversal near expiry, including live flip TTE=0", () => {
+  it("does not flip to a 2m reversal near expiry, including live flip TTE=0", () => {
     const late = strategy.evaluate(
       ctx({
         startPrice: 100,
@@ -262,11 +293,11 @@ describe("underlying-momentum-lag", () => {
         bestAsk: 0.46,
         bestBid: 0.44,
         outcomeName: "Up",
-        features: { underlyingReturn1m: -0.002 } as StrategyContext["features"],
+        features: { underlyingReturn2m: -0.002 } as StrategyContext["features"],
       }),
     );
     expect(late?.direction).toBe("BUY");
-    expect(late?.reason).toMatch(/1м розворот ігнор/);
+    expect(late?.reason).toMatch(/2м розворот ігнор/);
 
     const flipNearEnd = createMomentumLagStrategy({
       safetyMargin: 0,
@@ -279,7 +310,7 @@ describe("underlying-momentum-lag", () => {
         bestAsk: 0.46,
         bestBid: 0.44,
         outcomeName: "Up",
-        features: { underlyingReturn1m: -0.002 } as StrategyContext["features"],
+        features: { underlyingReturn2m: -0.002 } as StrategyContext["features"],
       }),
     );
     expect(flipNearEnd?.direction).toBe("BUY");
@@ -297,27 +328,27 @@ describe("underlying-momentum-lag", () => {
         bestAsk: 0.46,
         bestBid: 0.44,
         outcomeName: "Up",
-        features: { underlyingReturn1m: 0.002 } as StrategyContext["features"],
+        features: { underlyingReturn2m: 0.002 } as StrategyContext["features"],
       }),
     );
     expect(liveFlip?.direction).toBe("SELL");
-    expect(liveFlip?.reason).toMatch(/1м розворот ігнор/);
+    expect(liveFlip?.reason).toMatch(/2м розворот ігнор/);
   });
 
-  it("still follows a 1m reversal when there is time left in the window", () => {
+  it("still follows a 2m reversal when there is time left in the 5m window", () => {
     const signal = strategy.evaluate(
       ctx({
         startPrice: 100,
         underlyingPrice: 100.3,
-        timeToExpirySec: 600,
+        timeToExpirySec: 180,
         bestAsk: 0.46,
         bestBid: 0.44,
         outcomeName: "Up",
-        features: { underlyingReturn1m: -0.002 } as StrategyContext["features"],
+        features: { underlyingReturn2m: -0.002 } as StrategyContext["features"],
       }),
     );
     expect(signal?.direction).toBe("SELL");
-    expect(signal?.reason).toMatch(/розворот 1м/);
+    expect(signal?.reason).toMatch(/розворот 2м/);
   });
 
   it("stays on the 15m candle when only the 1m has reversed", () => {
@@ -368,7 +399,7 @@ describe("underlying-momentum-lag", () => {
         bestAsk: 0.46,
         bestBid: 0.44,
         outcomeName: "Up",
-        features: { underlyingReturn1m: -0.002 } as StrategyContext["features"],
+        features: { underlyingReturn2m: -0.002 } as StrategyContext["features"],
       }),
     );
     expect(signal?.direction).toBe("SELL");
@@ -383,7 +414,7 @@ describe("underlying-momentum-lag", () => {
         bestAsk: 0.75,
         bestBid: 0.74,
         outcomeName: "Up",
-        features: { underlyingReturn1m: 0.002 } as StrategyContext["features"],
+        features: { underlyingReturn2m: 0.002 } as StrategyContext["features"],
       }),
     );
     expect(signal).toBeNull();
@@ -395,7 +426,7 @@ describe("underlying-momentum-lag", () => {
         startPrice: 100,
         underlyingPrice: 100,
         bestAsk: 0.3,
-        features: { underlyingReturn1m: 0, underlyingReturn5m: 0 } as StrategyContext["features"],
+        features: { underlyingReturn2m: 0, underlyingReturn5m: 0 } as StrategyContext["features"],
       }),
     );
     expect(signal).toBeNull();
@@ -507,7 +538,7 @@ describe("evaluateStrategies", () => {
         lastPrice: 0.99,
         startPrice: 100,
         underlyingPrice: 100.4,
-        features: { underlyingReturn1m: 0.002 } as StrategyContext["features"],
+        features: { underlyingReturn2m: 0.002 } as StrategyContext["features"],
       }),
     );
     expect(signal?.strategyId).toBe("underlying-momentum-lag");

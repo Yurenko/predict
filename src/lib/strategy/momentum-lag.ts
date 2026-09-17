@@ -11,34 +11,53 @@ import {
 export { outcomeIsDownToken };
 
 export type SpotWindowSide = "up" | "down";
-export type TapeHorizon = "1m" | "5m";
+export type TapeHorizon = "2m" | "5m";
 
-/** Last N seconds of the window: recent tape is noise vs binary settlement. */
-export const DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC = 120;
-/** 5m contracts use 1m tape. Longer windows (15m ≈ 900s) use 5m tape. */
-export const ONE_MINUTE_TAPE_MAX_WINDOW_SEC = 450;
+/** 5m contracts use a 2m tape. Longer windows (15m ≈ 900s) use a 5m tape. */
+export const FIVE_MINUTE_WINDOW_MAX_SEC = 450;
 
-export function shouldIgnoreReversal1m(options: {
+export function shouldIgnoreTape(options: {
   timeToExpirySec: number | null | undefined;
-  ignoreReversal1mWithinSec: number;
+  ignoreWithinSec: number;
 }): boolean {
   const tte = options.timeToExpirySec;
-  const within = options.ignoreReversal1mWithinSec;
+  const within = options.ignoreWithinSec;
   if (tte == null || !(within > 0)) return false;
   return tte <= within;
 }
 
-export function allowOneMinuteTape(windowDurationSec: number | null | undefined): boolean {
+/** @deprecated use shouldIgnoreTape */
+export const shouldIgnoreReversal1m = (options: {
+  timeToExpirySec: number | null | undefined;
+  ignoreReversal1mWithinSec: number;
+}) =>
+  shouldIgnoreTape({
+    timeToExpirySec: options.timeToExpirySec,
+    ignoreWithinSec: options.ignoreReversal1mWithinSec,
+  });
+
+export function isFiveMinuteWindow(windowDurationSec: number | null | undefined): boolean {
   if (windowDurationSec == null) return true;
-  return windowDurationSec <= ONE_MINUTE_TAPE_MAX_WINDOW_SEC;
+  return windowDurationSec <= FIVE_MINUTE_WINDOW_MAX_SEC;
 }
 
-/** 5m market → 1m tape; 15m market → 5m tape (same role, not a 1m wick). */
+/** @deprecated use isFiveMinuteWindow */
+export const allowOneMinuteTape = isFiveMinuteWindow;
+
+/** 5m market → 2m tape; 15m market → 5m tape. */
 export function tapeHorizon(windowDurationSec: number | null | undefined): TapeHorizon {
-  return allowOneMinuteTape(windowDurationSec) ? "1m" : "5m";
+  return isFiveMinuteWindow(windowDurationSec) ? "2m" : "5m";
 }
 
-/** Vol scales with sqrt(time): 5m threshold ≈ 1m × √5. */
+export function tapeLookbackSec(horizon: TapeHorizon): number {
+  return horizon === "2m" ? 120 : 300;
+}
+
+/** Vol scales with sqrt(time) from a 1m baseline. */
+export function defaultMinReturn2m(minReturn1m: number): number {
+  return minReturn1m * Math.sqrt(2);
+}
+
 export function defaultMinReturn5m(minReturn1m: number): number {
   return minReturn1m * Math.sqrt(5);
 }
@@ -51,34 +70,37 @@ function tapeSign(returnPct: number | null | undefined, minReturn: number): 1 | 
 /**
  * 5m/15m Up/Down settle on spot vs this window's startPrice (the candle open).
  * Recent tape can flip the side if it already reversed against the body:
- * 1m on a 5m window, 5m on a 15m window. Near expiry, follow the candle.
+ * 2m on a 5m window, 5m on a 15m window. Near expiry (same block length),
+ * follow the candle.
  */
 export function spotWindowSide(options: {
   startPrice: number | null;
   spot: number | null;
-  return1m: number | null;
+  return1m?: number | null;
+  return2m?: number | null;
   return5m?: number | null;
   minVsStart: number;
   minReturn1m: number;
+  minReturn2m?: number;
   minReturn5m?: number;
   timeToExpirySec?: number | null;
   windowDurationSec?: number | null;
-  ignoreReversal1mWithinSec?: number;
+  ignoreReversalWithinSec?: number;
 }): { side: SpotWindowSide; vsStart: number; reason: string } | null {
-  const { startPrice, spot, return1m, minVsStart, minReturn1m } = options;
+  const { startPrice, spot, minVsStart, minReturn1m } = options;
   if (startPrice === null || spot === null || !(startPrice > 0)) return null;
   const vsStart = (spot - startPrice) / startPrice;
   const candle = Math.abs(vsStart) >= minVsStart ? (vsStart > 0 ? 1 : -1) : 0;
   const horizon = tapeHorizon(options.windowDurationSec);
+  const minReturn2m = options.minReturn2m ?? defaultMinReturn2m(minReturn1m);
   const minReturn5m = options.minReturn5m ?? defaultMinReturn5m(minReturn1m);
-  const tapeReturn = horizon === "1m" ? return1m : (options.return5m ?? null);
-  const tapeMin = horizon === "1m" ? minReturn1m : minReturn5m;
+  const tapeReturn = horizon === "2m" ? (options.return2m ?? null) : (options.return5m ?? null);
+  const tapeMin = horizon === "2m" ? minReturn2m : minReturn5m;
   const tape = tapeSign(tapeReturn, tapeMin);
-  const tapeLabel = horizon === "1m" ? "1м" : "5м";
-  const ignoreReversal = shouldIgnoreReversal1m({
+  const tapeLabel = horizon === "2m" ? "2м" : "5м";
+  const ignoreReversal = shouldIgnoreTape({
     timeToExpirySec: options.timeToExpirySec,
-    ignoreReversal1mWithinSec:
-      options.ignoreReversal1mWithinSec ?? DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC,
+    ignoreWithinSec: options.ignoreReversalWithinSec ?? tapeLookbackSec(horizon),
   });
   if (tape !== 0 && candle !== 0 && tape !== candle && !ignoreReversal) {
     const side: SpotWindowSide = tape < 0 ? "down" : "up";
@@ -122,7 +144,7 @@ function tokenDirection(
 
 /**
  * Bet this window's settlement side from spot vs startPrice.
- * Tape lookback matches the contract: 1m on 5m, 5m on 15m.
+ * Tape lookback matches the contract: 2m on 5m, 5m on 15m.
  */
 export function createMomentumLagStrategy(
   params: Record<string, unknown> = {},
@@ -130,12 +152,8 @@ export function createMomentumLagStrategy(
   const minTimeToExpirySec = numParam(params, "minTimeToExpirySec", 60);
   const minVsStart = numParam(params, "minVsStart", 0.0005);
   const minReturn1m = numParam(params, "minReturn1m", 0.0003);
+  const minReturn2m = numParam(params, "minReturn2m", defaultMinReturn2m(minReturn1m));
   const minReturn5m = numParam(params, "minReturn5m", defaultMinReturn5m(minReturn1m));
-  const ignoreReversal1mWithinSec = numParam(
-    params,
-    "ignoreReversal1mWithinSec",
-    DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC,
-  );
   const maxBuyAsk = numParam(params, "maxBuyAsk", 0.75);
   const minSellBid = numParam(params, "minSellBid", 0.25);
   const safetyMargin = numParam(params, "safetyMargin", 0.005);
@@ -150,14 +168,14 @@ export function createMomentumLagStrategy(
       const picked = spotWindowSide({
         startPrice: context.startPrice,
         spot: context.underlyingPrice,
-        return1m: context.features.underlyingReturn1m,
+        return2m: context.features.underlyingReturn2m,
         return5m: context.features.underlyingReturn5m,
         minVsStart,
         minReturn1m,
+        minReturn2m,
         minReturn5m,
         timeToExpirySec: context.timeToExpirySec,
         windowDurationSec: context.windowDurationSec,
-        ignoreReversal1mWithinSec,
       });
       if (!picked) return null;
 

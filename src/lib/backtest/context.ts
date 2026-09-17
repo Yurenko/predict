@@ -78,6 +78,7 @@ export function buildStrategyContext(options: {
     volume: underlying?.volume ?? null,
     features: {
       underlyingReturn1m: returnOver(options.underlyings, now, MINUTE),
+      underlyingReturn2m: returnOver(options.underlyings, now, 2 * MINUTE),
       underlyingReturn5m: returnOver(options.underlyings, now, 5 * MINUTE),
       underlyingReturn15m: returnOver(options.underlyings, now, 15 * MINUTE),
       probabilityMean: stats?.mean ?? null,
