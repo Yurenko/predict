@@ -13,6 +13,8 @@
     "minNetEdge": 0.02,
     "minTimeToExpirySec": 60,
     "ignoreReversal1mWithinSec": 120,
+    "minReturn1m": 0.0003,
+    "minReturn5m": 0.00067,
     "lookbackMinutes": 15,
     "minUnderlyingMove": 0.001,
     "returnScale": 0.01

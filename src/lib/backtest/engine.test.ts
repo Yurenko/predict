@@ -57,6 +57,8 @@ function market(
       outcomeName: "Yes",
       symbol: "BTCUSDT",
       endDate: new Date("2026-01-01T02:00:00.000Z"),
+      startDate: null,
+      windowDurationSec: null,
       startPrice: 100,
       bestBid: 0.39,
       bestAsk: 0.4,

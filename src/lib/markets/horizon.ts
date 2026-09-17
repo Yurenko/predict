@@ -83,7 +83,7 @@ function topicSearchText(topic: ListedTopicLike): string {
     .join(" ");
 }
 
-function minutesBetweenClockRange(text: string): number | null {
+export function minutesBetweenClockRange(text: string): number | null {
   const range = text.match(
     /(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)/i,
   );
@@ -117,6 +117,32 @@ function isShortCryptoWindow(text: string): boolean {
   if (/\b15m\b/i.test(text) || /\b5m\b/i.test(text)) return true;
   const minutes = minutesBetweenClockRange(text);
   return minutes === 5 || minutes === 15;
+}
+
+/** 5m vs 15m contract length. Prefer start/end dates; fall back to "2PM-2:15PM" in the title. */
+export function cryptoWindowDurationSec(options: {
+  startDate?: Date | string | null;
+  endDate?: Date | string | null;
+  title?: string | null;
+}): number | null {
+  const start =
+    options.startDate instanceof Date
+      ? options.startDate.getTime()
+      : typeof options.startDate === "string"
+        ? new Date(options.startDate).getTime()
+        : NaN;
+  const end =
+    options.endDate instanceof Date
+      ? options.endDate.getTime()
+      : typeof options.endDate === "string"
+        ? new Date(options.endDate).getTime()
+        : NaN;
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    return Math.floor((end - start) / 1000);
+  }
+  const minutes = minutesBetweenClockRange(options.title ?? "");
+  if (minutes != null && minutes > 0) return minutes * 60;
+  return null;
 }
 
 /** BTC / ETH / BNB Up or Down 5m and 15m only — not 1h/1d, SOL, sports, or stocks. */

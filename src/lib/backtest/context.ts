@@ -66,6 +66,11 @@ export function buildStrategyContext(options: {
     liquidity: tick.liquidity,
     spread: tick.spread,
     timeToExpirySec,
+    windowDurationSec:
+      tick.windowDurationSec ??
+      (tick.startDate && tick.endDate
+        ? Math.floor((tick.endDate.getTime() - tick.startDate.getTime()) / 1000)
+        : null),
     underlyingSymbol: tick.symbol,
     underlyingPrice: underlying?.price ?? null,
     startPrice: tick.startPrice,

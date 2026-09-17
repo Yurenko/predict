@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { StrategyContext } from "@/lib/types/domain";
 import {
+  allowOneMinuteTape,
   createMomentumLagStrategy,
   shouldIgnoreReversal1m,
   spotWindowSide,
+  tapeHorizon,
 } from "./momentum-lag";
 import { createMeanReversionStrategy } from "./mean-reversion";
 import { createFairValueStrategy } from "./fair-value";
@@ -24,7 +26,8 @@ function ctx(over: Partial<StrategyContext> = {}): StrategyContext {
     bestAsk: 0.46,
     liquidity: 5000,
     spread: 0.02,
-    timeToExpirySec: 600,
+    timeToExpirySec: 240,
+    windowDurationSec: 300,
     underlyingSymbol: "BTCUSDT",
     underlyingPrice: 100,
     startPrice: 100,
@@ -114,7 +117,8 @@ describe("spotWindowSide", () => {
         return1m: -0.002,
         minVsStart: 0.0005,
         minReturn1m: 0.0003,
-        timeToExpirySec: 600,
+        timeToExpirySec: 240,
+        windowDurationSec: 300,
       })?.side,
     ).toBe("down");
     expect(
@@ -124,9 +128,52 @@ describe("spotWindowSide", () => {
         return1m: 0.002,
         minVsStart: 0.0005,
         minReturn1m: 0.0003,
-        timeToExpirySec: 600,
+        timeToExpirySec: 240,
+        windowDurationSec: 300,
       })?.side,
     ).toBe("up");
+  });
+
+  it("does not let a 1m wick override a 15m candle; 5m tape can", () => {
+    const oneMinuteNoise = spotWindowSide({
+      startPrice: 100,
+      spot: 100.3,
+      return1m: -0.002,
+      return5m: 0.001,
+      minVsStart: 0.0005,
+      minReturn1m: 0.0003,
+      timeToExpirySec: 600,
+      windowDurationSec: 900,
+    });
+    expect(oneMinuteNoise?.side).toBe("up");
+    expect(oneMinuteNoise?.reason).not.toMatch(/розворот 1м/);
+    const fiveMinuteReversal = spotWindowSide({
+      startPrice: 100,
+      spot: 100.3,
+      return1m: -0.002,
+      return5m: -0.002,
+      minVsStart: 0.0005,
+      minReturn1m: 0.0003,
+      timeToExpirySec: 600,
+      windowDurationSec: 900,
+    });
+    expect(fiveMinuteReversal?.side).toBe("down");
+    expect(fiveMinuteReversal?.reason).toMatch(/розворот 5м/);
+    expect(
+      spotWindowSide({
+        startPrice: 100,
+        spot: 100,
+        return1m: 0.002,
+        return5m: null,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+        windowDurationSec: 900,
+      }),
+    ).toBeNull();
+    expect(tapeHorizon(300)).toBe("1m");
+    expect(tapeHorizon(900)).toBe("5m");
+    expect(allowOneMinuteTape(300)).toBe(true);
+    expect(allowOneMinuteTape(900)).toBe(false);
   });
 
   it("ignores the 1m reversal in the last 2 minutes and stays on the candle", () => {
@@ -150,6 +197,18 @@ describe("spotWindowSide", () => {
         timeToExpirySec: 0,
       })?.side,
     ).toBe("down");
+    expect(
+      spotWindowSide({
+        startPrice: 100,
+        spot: 100.3,
+        return1m: 0,
+        return5m: -0.002,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+        timeToExpirySec: 90,
+        windowDurationSec: 900,
+      })?.side,
+    ).toBe("up");
     expect(
       shouldIgnoreReversal1m({ timeToExpirySec: 120, ignoreReversal1mWithinSec: 120 }),
     ).toBe(true);
@@ -259,6 +318,46 @@ describe("underlying-momentum-lag", () => {
     );
     expect(signal?.direction).toBe("SELL");
     expect(signal?.reason).toMatch(/розворот 1м/);
+  });
+
+  it("stays on the 15m candle when only the 1m has reversed", () => {
+    const signal = strategy.evaluate(
+      ctx({
+        startPrice: 100,
+        underlyingPrice: 100.3,
+        timeToExpirySec: 600,
+        windowDurationSec: 900,
+        bestAsk: 0.46,
+        bestBid: 0.44,
+        outcomeName: "Up",
+        features: {
+          underlyingReturn1m: -0.002,
+          underlyingReturn5m: 0.001,
+        } as StrategyContext["features"],
+      }),
+    );
+    expect(signal?.direction).toBe("BUY");
+    expect(signal?.reason).not.toMatch(/розворот 1м/);
+  });
+
+  it("follows a 5m reversal on a 15m window", () => {
+    const signal = strategy.evaluate(
+      ctx({
+        startPrice: 100,
+        underlyingPrice: 100.3,
+        timeToExpirySec: 600,
+        windowDurationSec: 900,
+        bestAsk: 0.46,
+        bestBid: 0.44,
+        outcomeName: "Up",
+        features: {
+          underlyingReturn1m: -0.002,
+          underlyingReturn5m: -0.002,
+        } as StrategyContext["features"],
+      }),
+    );
+    expect(signal?.direction).toBe("SELL");
+    expect(signal?.reason).toMatch(/розворот 5м/);
   });
 
   it("sells Up (bets Down) when spot is below this window start", () => {

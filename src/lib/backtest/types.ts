@@ -59,6 +59,8 @@ export interface MarketTick {
   outcomeName: string | null;
   symbol: string | null;
   endDate: Date | null;
+  startDate: Date | null;
+  windowDurationSec: number | null;
   startPrice: number | null;
   bestBid: number | null;
   bestAsk: number | null;

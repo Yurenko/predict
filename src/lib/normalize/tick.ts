@@ -1,6 +1,7 @@
 import { invertBinaryBook, invertBinaryPrice } from "@/lib/live/binary";
 import { outcomeIsDownToken, pickPrimaryOutcome } from "@/lib/normalize/markets";
 import { asNumber } from "@/lib/normalize/numbers";
+import { cryptoWindowDurationSec } from "@/lib/markets/horizon";
 import type { MarketTick } from "@/lib/backtest/types";
 
 export interface SnapshotTickRow {
@@ -21,6 +22,8 @@ export interface SnapshotTickRow {
     venueMarketId: string;
     topic: {
       symbol: string | null;
+      title?: string | null;
+      startDate?: Date | null;
       endDate: Date | null;
       startPrice: unknown;
     };
@@ -91,6 +94,12 @@ export function tickFromSnapshot(row: SnapshotTickRow): MarketTick {
     outcomeName: primary?.name ?? row.outcome?.name ?? null,
     symbol: row.market.topic.symbol,
     endDate: row.market.topic.endDate,
+    startDate: row.market.topic.startDate ?? null,
+    windowDurationSec: cryptoWindowDurationSec({
+      startDate: row.market.topic.startDate,
+      endDate: row.market.topic.endDate,
+      title: row.market.topic.title,
+    }),
     startPrice: asNumber(row.market.topic.startPrice),
     bestBid: book.bestBid,
     bestAsk: book.bestAsk,

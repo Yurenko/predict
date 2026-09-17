@@ -1,5 +1,6 @@
 import { asNumber } from "@/lib/normalize/numbers";
 import { prisma } from "@/lib/db/prisma";
+import { cryptoWindowDurationSec } from "@/lib/markets/horizon";
 import type {
   BacktestConfig,
   HistoricalQuote,
@@ -54,6 +55,12 @@ export async function loadReplayEvents(config: BacktestConfig): Promise<{
       outcomeName: row.outcome?.name ?? null,
       symbol: row.market.topic.symbol,
       endDate: row.market.topic.endDate,
+      startDate: row.market.topic.startDate,
+      windowDurationSec: cryptoWindowDurationSec({
+        startDate: row.market.topic.startDate,
+        endDate: row.market.topic.endDate,
+        title: row.market.topic.title,
+      }),
       startPrice: decimal(row.market.topic.startPrice),
       bestBid: decimal(row.bestBid),
       bestAsk: decimal(row.bestAsk),

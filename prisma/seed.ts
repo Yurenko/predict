@@ -7,13 +7,14 @@ const strategies = [
     slug: "underlying-momentum-lag",
     kind: StrategyKind.UNDERLYING_MOMENTUM_LAG,
     name: "Underlying vs window start (5m/15m candle)",
-    version: "0.3.0",
+    version: "0.5.0",
     enabled: false,
     description:
-      "5m/15m Up/Down: if BTC/ETH is below this window's startPrice → Down; above → Up. If the last 1m already reversed against that candle, follow the 1m — except in the last 2 minutes, when settlement is the candle and 1m wicks are ignored. Does not mix 15m lookback into a 5m contract.",
+      "5m/15m Up/Down: if BTC/ETH is below this window's startPrice → Down; above → Up. Recent tape can flip that candle: 1m on 5m markets, 5m on 15m markets. Last 2 minutes follow the candle, not the tape. Does not mix 15m lookback into a 5m contract.",
     parameters: {
       minVsStart: 0.0005,
       minReturn1m: 0.0003,
+      minReturn5m: 0.00067,
       maxBuyAsk: 0.75,
       minSellBid: 0.25,
       minTimeToExpirySec: 60,

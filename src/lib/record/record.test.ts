@@ -85,7 +85,13 @@ describe("tickFromSnapshot", () => {
       timeToExpirySec: 120,
       market: {
         venueMarketId: "99",
-        topic: { symbol: "BTCUSDT", endDate: new Date("2026-01-01T01:00:00Z"), startPrice: 100 },
+        topic: {
+          symbol: "BTCUSDT",
+          title: "Bitcoin Up or Down - January 1, 12:55AM-1AM ET",
+          startDate: new Date("2026-01-01T00:55:00Z"),
+          endDate: new Date("2026-01-01T01:00:00Z"),
+          startPrice: 100,
+        },
         outcomes: [{ tokenId: "tok", name: "Yes", outcomeIndex: 0 }],
       },
       outcome: { tokenId: "tok", name: "Yes" },
@@ -95,6 +101,7 @@ describe("tickFromSnapshot", () => {
     expect(tick.lastPrice).toBe(0.99);
     expect(tick.tokenId).toBe("tok");
     expect(tick.outcomeName).toBe("Yes");
+    expect(tick.windowDurationSec).toBe(300);
   });
 
   it("pins a Down snapshot to the Up token and inverts the book", () => {
@@ -161,6 +168,8 @@ describe("hypotheticalSignals", () => {
       outcomeName: "Yes",
       symbol: "BTCUSDT",
       endDate: new Date("2026-01-01T01:00:00Z"),
+      startDate: null,
+      windowDurationSec: null,
       startPrice: 100,
       bestBid: 0.4,
       bestAsk: 0.42,

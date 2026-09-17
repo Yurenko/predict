@@ -7,9 +7,12 @@ export {
 } from "@/lib/strategy/registry";
 export {
   createMomentumLagStrategy,
+  allowOneMinuteTape,
+  defaultMinReturn5m,
   DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC,
   shouldIgnoreReversal1m,
   spotWindowSide,
+  tapeHorizon,
 } from "@/lib/strategy/momentum-lag";
 export { createMeanReversionStrategy } from "@/lib/strategy/mean-reversion";
 export { createFairValueStrategy } from "@/lib/strategy/fair-value";

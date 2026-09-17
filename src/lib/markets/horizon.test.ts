@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cryptoWindowDurationSec,
   classifyEndDate,
   heldOrTradableMarketWhere,
   isShortCryptoUpDownMarket,
@@ -64,6 +65,31 @@ describe("parseCollectorCategories", () => {
 });
 
 describe("topic helpers", () => {
+  it("reads 5m vs 15m length from dates or the clock range in the title", () => {
+    expect(
+      cryptoWindowDurationSec({
+        startDate: new Date("2026-09-17T05:30:00.000Z"),
+        endDate: new Date("2026-09-17T05:35:00.000Z"),
+      }),
+    ).toBe(300);
+    expect(
+      cryptoWindowDurationSec({
+        startDate: new Date("2026-09-17T05:00:00.000Z"),
+        endDate: new Date("2026-09-17T05:15:00.000Z"),
+      }),
+    ).toBe(900);
+    expect(
+      cryptoWindowDurationSec({
+        title: "BNB Up or Down - September 17, 1:30AM-1:35AM ET",
+      }),
+    ).toBe(300);
+    expect(
+      cryptoWindowDurationSec({
+        title: "Bitcoin Up or Down - September 16, 2PM-2:15PM ET",
+      }),
+    ).toBe(900);
+  });
+
   it("dedupes and sorts by endDate", () => {
     const rows = uniqueTopicsById(
       sortTopicsByEndDate([
