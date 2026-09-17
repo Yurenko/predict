@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { StrategyContext } from "@/lib/types/domain";
-import { createMomentumLagStrategy, spotWindowSide } from "./momentum-lag";
+import {
+  createMomentumLagStrategy,
+  shouldIgnoreReversal1m,
+  spotWindowSide,
+} from "./momentum-lag";
 import { createMeanReversionStrategy } from "./mean-reversion";
 import { createFairValueStrategy } from "./fair-value";
 import { evaluateStrategies, loadResearchStrategies } from "./evaluate";
+import { liveStrategyParams } from "@/lib/live/binary-mode";
 import { estimateCosts } from "./common";
 import "./index";
 
@@ -109,6 +114,7 @@ describe("spotWindowSide", () => {
         return1m: -0.002,
         minVsStart: 0.0005,
         minReturn1m: 0.0003,
+        timeToExpirySec: 600,
       })?.side,
     ).toBe("down");
     expect(
@@ -118,8 +124,41 @@ describe("spotWindowSide", () => {
         return1m: 0.002,
         minVsStart: 0.0005,
         minReturn1m: 0.0003,
+        timeToExpirySec: 600,
       })?.side,
     ).toBe("up");
+  });
+
+  it("ignores the 1m reversal in the last 2 minutes and stays on the candle", () => {
+    const late = spotWindowSide({
+      startPrice: 100,
+      spot: 100.3,
+      return1m: -0.002,
+      minVsStart: 0.0005,
+      minReturn1m: 0.0003,
+      timeToExpirySec: 90,
+    });
+    expect(late?.side).toBe("up");
+    expect(late?.reason).toMatch(/1м розворот ігнор/);
+    expect(
+      spotWindowSide({
+        startPrice: 100,
+        spot: 99.7,
+        return1m: 0.002,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+        timeToExpirySec: 0,
+      })?.side,
+    ).toBe("down");
+    expect(
+      shouldIgnoreReversal1m({ timeToExpirySec: 120, ignoreReversal1mWithinSec: 120 }),
+    ).toBe(true);
+    expect(
+      shouldIgnoreReversal1m({ timeToExpirySec: 121, ignoreReversal1mWithinSec: 120 }),
+    ).toBe(false);
+    expect(
+      shouldIgnoreReversal1m({ timeToExpirySec: 0, ignoreReversal1mWithinSec: 0 }),
+    ).toBe(false);
   });
 
   it("stays out when the candle is still at the open", () => {
@@ -153,6 +192,73 @@ describe("underlying-momentum-lag", () => {
     expect(signal?.direction).toBe("BUY");
     expect(signal?.reason).toMatch(/старт|спот/i);
     expect(signal?.reason).not.toMatch(/0\.99/);
+  });
+
+  it("does not flip to a 1m reversal near expiry, including live flip TTE=0", () => {
+    const late = strategy.evaluate(
+      ctx({
+        startPrice: 100,
+        underlyingPrice: 100.3,
+        timeToExpirySec: 90,
+        bestAsk: 0.46,
+        bestBid: 0.44,
+        outcomeName: "Up",
+        features: { underlyingReturn1m: -0.002 } as StrategyContext["features"],
+      }),
+    );
+    expect(late?.direction).toBe("BUY");
+    expect(late?.reason).toMatch(/1м розворот ігнор/);
+
+    const flipNearEnd = createMomentumLagStrategy({
+      safetyMargin: 0,
+      minTimeToExpirySec: 0,
+    }).evaluate(
+      ctx({
+        startPrice: 100,
+        underlyingPrice: 100.3,
+        timeToExpirySec: 30,
+        bestAsk: 0.46,
+        bestBid: 0.44,
+        outcomeName: "Up",
+        features: { underlyingReturn1m: -0.002 } as StrategyContext["features"],
+      }),
+    );
+    expect(flipNearEnd?.direction).toBe("BUY");
+
+    const liveFlip = createMomentumLagStrategy(
+      liveStrategyParams({
+        parameters: { safetyMargin: 0, minTimeToExpirySec: 60 },
+        keepSignallingNearExpiry: true,
+      }),
+    ).evaluate(
+      ctx({
+        startPrice: 100,
+        underlyingPrice: 99.7,
+        timeToExpirySec: 15,
+        bestAsk: 0.46,
+        bestBid: 0.44,
+        outcomeName: "Up",
+        features: { underlyingReturn1m: 0.002 } as StrategyContext["features"],
+      }),
+    );
+    expect(liveFlip?.direction).toBe("SELL");
+    expect(liveFlip?.reason).toMatch(/1м розворот ігнор/);
+  });
+
+  it("still follows a 1m reversal when there is time left in the window", () => {
+    const signal = strategy.evaluate(
+      ctx({
+        startPrice: 100,
+        underlyingPrice: 100.3,
+        timeToExpirySec: 600,
+        bestAsk: 0.46,
+        bestBid: 0.44,
+        outcomeName: "Up",
+        features: { underlyingReturn1m: -0.002 } as StrategyContext["features"],
+      }),
+    );
+    expect(signal?.direction).toBe("SELL");
+    expect(signal?.reason).toMatch(/розворот 1м/);
   });
 
   it("sells Up (bets Down) when spot is below this window start", () => {

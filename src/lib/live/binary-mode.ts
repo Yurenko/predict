@@ -35,8 +35,9 @@ export function shouldBlockLiveFlipEnter(options: {
 }
 
 /**
- * Flip keeps emitting until endDate. A first ENTER on an empty market still
- * uses the strategy's normal minTimeToExpirySec (usually 60s).
+ * Paper/Live flip keeps emitting until endDate so a 1m-reversal leg can
+ * flatten back to the candle. A first ENTER on an empty market still uses
+ * the strategy's normal minTimeToExpirySec (usually 60s).
  */
 export function liveStrategyParams(options: {
   parameters: Record<string, unknown>;

@@ -37,7 +37,7 @@ import {
 import { paperFillReady } from "@/lib/paper/delays";
 import { flattenExpiredPaperPositions } from "@/lib/paper/expiry";
 import { invertBinaryBook, resolveBinaryWorkerTrade } from "@/lib/live/binary";
-import { liveOppositeCloses } from "@/lib/live/binary-mode";
+import { liveOppositeCloses, liveStrategyParams } from "@/lib/live/binary-mode";
 import { outcomeIsDownToken } from "@/lib/normalize/markets";
 import { PAPER_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
 import {
@@ -468,11 +468,28 @@ export async function runPaperOnce(): Promise<{
     });
 
     for (const row of enabled) {
-      const params = (row.parameters ?? {}) as Record<string, unknown>;
+      const opens = await prisma.position.findMany({
+        where: {
+          mode: TradingMode.PAPER,
+          status: "OPEN",
+          marketId: market.id,
+          strategyId: row.id,
+        },
+        include: { outcome: { select: { name: true } } },
+      });
+      const openUp =
+        opens.find((item) => !outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
+      const openDown =
+        opens.find((item) => outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
+      let pending = oppositeCloses ? await readPendingFlip(row.id, market.id) : null;
+      const params = liveStrategyParams({
+        parameters: (row.parameters ?? {}) as Record<string, unknown>,
+        keepSignallingNearExpiry:
+          oppositeCloses && Boolean(openUp || openDown || pending),
+      });
       const strategy = createStrategy(row.slug, params);
       if (!strategy) continue;
       const signal = strategy.evaluate(ctx);
-      let pending = oppositeCloses ? await readPendingFlip(row.id, market.id) : null;
       if (pending && shouldCancelPendingFlip(pending.side, signal?.direction)) {
         await clearPendingFlip(row.id, market.id);
         pending = null;
@@ -499,20 +516,6 @@ export async function runPaperOnce(): Promise<{
 
       const primaryTokenId = tick.tokenId;
       if (!primaryTokenId) continue;
-
-      const opens = await prisma.position.findMany({
-        where: {
-          mode: TradingMode.PAPER,
-          status: "OPEN",
-          marketId: market.id,
-          strategyId: row.id,
-        },
-        include: { outcome: { select: { name: true } } },
-      });
-      const openUp =
-        opens.find((item) => !outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
-      const openDown =
-        opens.find((item) => outcomeIsDownToken(item.outcome?.name ?? null)) ?? null;
       const trade = resolveBinaryWorkerTrade({
         direction: actingSignal.direction,
         hasOpenUp: Boolean(openUp),

@@ -5,7 +5,12 @@ export {
   registerStrategy,
   registeredStrategySlugs,
 } from "@/lib/strategy/registry";
-export { createMomentumLagStrategy, spotWindowSide } from "@/lib/strategy/momentum-lag";
+export {
+  createMomentumLagStrategy,
+  DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC,
+  shouldIgnoreReversal1m,
+  spotWindowSide,
+} from "@/lib/strategy/momentum-lag";
 export { createMeanReversionStrategy } from "@/lib/strategy/mean-reversion";
 export { createFairValueStrategy } from "@/lib/strategy/fair-value";
 export { evaluateStrategies, loadResearchStrategies, researchStrategyOrder } from "@/lib/strategy/evaluate";

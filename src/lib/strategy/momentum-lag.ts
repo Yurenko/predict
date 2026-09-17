@@ -12,10 +12,24 @@ export { outcomeIsDownToken };
 
 export type SpotWindowSide = "up" | "down";
 
+/** Last N seconds of the window: 1m tape is noise vs binary settlement. */
+export const DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC = 120;
+
+export function shouldIgnoreReversal1m(options: {
+  timeToExpirySec: number | null | undefined;
+  ignoreReversal1mWithinSec: number;
+}): boolean {
+  const tte = options.timeToExpirySec;
+  const within = options.ignoreReversal1mWithinSec;
+  if (tte == null || !(within > 0)) return false;
+  return tte <= within;
+}
+
 /**
  * 5m/15m Up/Down settle on spot vs this window's startPrice (the candle open).
  * Follow that candle. If the last 1m has already reversed against the body,
- * follow the 1m (rise already happened → now down, and vice versa).
+ * follow the 1m — except near expiry, where that tape is usually a wick
+ * against binary settlement.
  */
 export function spotWindowSide(options: {
   startPrice: number | null;
@@ -23,6 +37,8 @@ export function spotWindowSide(options: {
   return1m: number | null;
   minVsStart: number;
   minReturn1m: number;
+  timeToExpirySec?: number | null;
+  ignoreReversal1mWithinSec?: number;
 }): { side: SpotWindowSide; vsStart: number; reason: string } | null {
   const { startPrice, spot, return1m, minVsStart, minReturn1m } = options;
   if (startPrice === null || spot === null || !(startPrice > 0)) return null;
@@ -30,7 +46,12 @@ export function spotWindowSide(options: {
   const candle = Math.abs(vsStart) >= minVsStart ? (vsStart > 0 ? 1 : -1) : 0;
   const tape =
     return1m !== null && Math.abs(return1m) >= minReturn1m ? (return1m > 0 ? 1 : -1) : 0;
-  if (tape !== 0 && candle !== 0 && tape !== candle) {
+  const ignoreReversal = shouldIgnoreReversal1m({
+    timeToExpirySec: options.timeToExpirySec,
+    ignoreReversal1mWithinSec:
+      options.ignoreReversal1mWithinSec ?? DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC,
+  });
+  if (tape !== 0 && candle !== 0 && tape !== candle && !ignoreReversal) {
     const side: SpotWindowSide = tape < 0 ? "down" : "up";
     return {
       side,
@@ -38,12 +59,16 @@ export function spotWindowSide(options: {
       reason: `розворот 1м: вікно ${vsStart >= 0 ? "вище" : "нижче"} старту ${(vsStart * 100).toFixed(3)}%, 1м ${(return1m! * 100).toFixed(3)}% → ${side}`,
     };
   }
-  if (candle !== 0 && (tape === 0 || tape === candle)) {
+  if (candle !== 0) {
     const side: SpotWindowSide = candle < 0 ? "down" : "up";
+    const skipped =
+      ignoreReversal && tape !== 0 && tape !== candle
+        ? `; 1м розворот ігнор (tte ${options.timeToExpirySec}s)`
+        : "";
     return {
       side,
       vsStart,
-      reason: `спот ${spot.toFixed(2)} vs старт ${startPrice.toFixed(2)} (${(vsStart * 100).toFixed(3)}%) → ${side}`,
+      reason: `спот ${spot.toFixed(2)} vs старт ${startPrice.toFixed(2)} (${(vsStart * 100).toFixed(3)}%) → ${side}${skipped}`,
     };
   }
   if (candle === 0 && tape !== 0) {
@@ -76,6 +101,11 @@ export function createMomentumLagStrategy(
   const minTimeToExpirySec = numParam(params, "minTimeToExpirySec", 60);
   const minVsStart = numParam(params, "minVsStart", 0.0005);
   const minReturn1m = numParam(params, "minReturn1m", 0.0003);
+  const ignoreReversal1mWithinSec = numParam(
+    params,
+    "ignoreReversal1mWithinSec",
+    DEFAULT_IGNORE_REVERSAL_1M_WITHIN_SEC,
+  );
   const maxBuyAsk = numParam(params, "maxBuyAsk", 0.75);
   const minSellBid = numParam(params, "minSellBid", 0.25);
   const safetyMargin = numParam(params, "safetyMargin", 0.005);
@@ -93,6 +123,8 @@ export function createMomentumLagStrategy(
         return1m: context.features.underlyingReturn1m,
         minVsStart,
         minReturn1m,
+        timeToExpirySec: context.timeToExpirySec,
+        ignoreReversal1mWithinSec,
       });
       if (!picked) return null;
 

@@ -12,6 +12,7 @@
     "returns": ["1m", "5m", "15m"],
     "minNetEdge": 0.02,
     "minTimeToExpirySec": 60,
+    "ignoreReversal1mWithinSec": 120,
     "lookbackMinutes": 15,
     "minUnderlyingMove": 0.001,
     "returnScale": 0.01
