@@ -22,7 +22,8 @@ export function liveOppositeCloses(mode: LiveBinaryMode): boolean {
 
 /**
  * Flip ENTER must wait until the previous leg is actually closed.
- * Inflight EXIT does not block once Binance ONGOING shares are already 0.
+ * Next-cycle ENTER still waits for OPEN to clear (venue-flat / close),
+ * like Paper waiting for the EXIT fill.
  */
 export function shouldBlockLiveFlipEnter(options: {
   mode: LiveBinaryMode;

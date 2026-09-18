@@ -11,7 +11,11 @@ export const LIVE_FLIP_EXIT_CONFIRM_INTERVAL_MS = 0;
 
 type HistoryOrder = W3WPredictionRestAPI.QueryOrderHistoryResponseOrdersInner;
 
-export function shouldImmediateFlipEnter(options: {
+/**
+ * Confirm the flip EXIT fill (and stamp the old leg flat) so the next cycle
+ * can re-evaluate, like Paper after a delayed fill. Do not ENTER here.
+ */
+export function shouldConfirmFlipExit(options: {
   oppositeCloses: boolean;
   exitPlaced: boolean;
   managementExit: boolean;
@@ -24,6 +28,18 @@ export function shouldImmediateFlipEnter(options: {
     options.wantedSide != null &&
     (options.exitPlaced || options.venueSharesGone === true)
   );
+}
+
+/** @deprecated Same-cycle flip ENTER; Live now waits for the next evaluate like Paper. */
+export function shouldImmediateFlipEnter(options: {
+  oppositeCloses: boolean;
+  exitPlaced: boolean;
+  managementExit: boolean;
+  wantedSide: PendingFlipSide | null;
+  venueSharesGone?: boolean;
+}): boolean {
+  void options;
+  return false;
 }
 
 /** Local OPEN leftover after a filled EXIT: Binance already shows 0 shares. */

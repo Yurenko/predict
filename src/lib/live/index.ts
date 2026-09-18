@@ -10,6 +10,7 @@ export { armLiveClaimAfterClose, refreshLiveAccountAfterClose } from "@/lib/live
 export {
   confirmLiveFlipExit,
   liveFlipExitConfirmResult,
+  shouldConfirmFlipExit,
   shouldImmediateFlipEnter,
   shouldRecoverFlipEnter,
 } from "@/lib/live/flip-followthrough";

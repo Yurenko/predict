@@ -2,15 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   liveFlipExitConfirmResult,
   officialFlipExitStatus,
+  shouldConfirmFlipExit,
   shouldImmediateFlipEnter,
   shouldRecoverFlipEnter,
   confirmLiveFlipExit,
 } from "./flip-followthrough";
 
-describe("shouldImmediateFlipEnter", () => {
-  it("runs only after a strategy flip EXIT, not TP/trail", () => {
+describe("shouldConfirmFlipExit", () => {
+  it("confirms a strategy flip EXIT so the next evaluate can enter, not TP/trail", () => {
     expect(
-      shouldImmediateFlipEnter({
+      shouldConfirmFlipExit({
         oppositeCloses: true,
         exitPlaced: true,
         managementExit: false,
@@ -18,7 +19,7 @@ describe("shouldImmediateFlipEnter", () => {
       }),
     ).toBe(true);
     expect(
-      shouldImmediateFlipEnter({
+      shouldConfirmFlipExit({
         oppositeCloses: true,
         exitPlaced: true,
         managementExit: true,
@@ -26,9 +27,39 @@ describe("shouldImmediateFlipEnter", () => {
       }),
     ).toBe(false);
     expect(
-      shouldImmediateFlipEnter({
+      shouldConfirmFlipExit({
         oppositeCloses: true,
         exitPlaced: false,
+        managementExit: false,
+        wantedSide: "DOWN",
+      }),
+    ).toBe(false);
+    expect(
+      shouldConfirmFlipExit({
+        oppositeCloses: true,
+        exitPlaced: false,
+        managementExit: false,
+        wantedSide: "DOWN",
+        venueSharesGone: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldConfirmFlipExit({
+        oppositeCloses: false,
+        exitPlaced: true,
+        managementExit: false,
+        wantedSide: "DOWN",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldImmediateFlipEnter", () => {
+  it("never ENTERs the opposite side in the same cycle as EXIT (Paper waits for next evaluate)", () => {
+    expect(
+      shouldImmediateFlipEnter({
+        oppositeCloses: true,
+        exitPlaced: true,
         managementExit: false,
         wantedSide: "DOWN",
       }),
@@ -41,20 +72,12 @@ describe("shouldImmediateFlipEnter", () => {
         wantedSide: "DOWN",
         venueSharesGone: true,
       }),
-    ).toBe(true);
-    expect(
-      shouldImmediateFlipEnter({
-        oppositeCloses: false,
-        exitPlaced: true,
-        managementExit: false,
-        wantedSide: "DOWN",
-      }),
     ).toBe(false);
   });
 });
 
 describe("shouldRecoverFlipEnter", () => {
-  it("enters the other side when the EXIT already flattened Binance inventory", () => {
+  it("stamps the old leg flat when Binance inventory is already 0 (ENTER waits for next evaluate)", () => {
     expect(
       shouldRecoverFlipEnter({
         wantedSide: "DOWN",

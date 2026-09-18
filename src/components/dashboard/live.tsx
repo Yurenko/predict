@@ -708,7 +708,7 @@ export function SignalsPanel() {
       <p className="mb-3 max-w-3xl text-xs leading-5 text-zinc-500">
         BUY UP — купівля токена Up. BUY DOWN — купівля токена Down (сигнал SELL). EXIT BUY / EXIT SELL —
         повний продаж того токена. Стратегія не чіпає чужі позиції. LIVE як Paper: протилежний сигнал
-        спочатку закриває ногу, інша сторона — після CLOSED.
+        спочатку закриває ногу; інша сторона — лише на наступному evaluate після CLOSED.
       </p>
       <div className="mb-4">
         <ClearDataButtons

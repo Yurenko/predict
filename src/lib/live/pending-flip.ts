@@ -13,7 +13,7 @@ export interface PendingFlip {
   side: PendingFlipSide;
   fromTokenId: string | null;
   createdAt: string;
-  /** EXIT already placed or venue inventory is already 0 — finish the ENTER. */
+  /** Legacy: used to force same-cycle ENTER. Live now waits for the next evaluate. */
   committed: boolean;
 }
 
@@ -71,7 +71,7 @@ export function pendingFlipFromSignal(direction: SignalDirection): PendingFlipSi
 
 /**
  * EXIT or the opposite of the stored side cancels. Missing/FLAT does not.
- * After the EXIT is committed, a noisy opposite tick must not abort the ENTER.
+ * Paper/Live re-evaluate after EXIT: if the tape flipped, drop the pending side.
  */
 export function shouldCancelPendingFlip(
   pending: PendingFlipSide,

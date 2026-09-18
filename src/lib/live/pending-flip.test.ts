@@ -35,7 +35,7 @@ describe("pending flip intent", () => {
     expect(shouldCancelPendingFlip("UP", "BUY")).toBe(false);
   });
 
-  it("does not abort a committed flip when the tape flickers the other way", () => {
+  it("legacy committed still blocks opposite-side cancel, but EXIT always cancels", () => {
     expect(shouldCancelPendingFlip("DOWN", "BUY", { committed: true })).toBe(false);
     expect(shouldCancelPendingFlip("DOWN", "EXIT", { committed: true })).toBe(true);
   });
