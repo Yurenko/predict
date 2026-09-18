@@ -13,6 +13,8 @@ export interface PendingFlip {
   side: PendingFlipSide;
   fromTokenId: string | null;
   createdAt: string;
+  /** EXIT already placed or venue inventory is already 0 — finish the ENTER. */
+  committed: boolean;
 }
 
 const log = childLogger({ component: "pending-flip" });
@@ -53,6 +55,7 @@ export function parsePendingFlip(raw: unknown): PendingFlip | null {
     side,
     fromTokenId: typeof row.fromTokenId === "string" ? row.fromTokenId : null,
     createdAt: typeof row.createdAt === "string" ? row.createdAt : new Date(0).toISOString(),
+    committed: row.committed === true,
   };
 }
 
@@ -66,13 +69,18 @@ export function pendingFlipFromSignal(direction: SignalDirection): PendingFlipSi
   return null;
 }
 
-/** EXIT or the opposite of the stored side cancels. Missing/FLAT signal does not. */
+/**
+ * EXIT or the opposite of the stored side cancels. Missing/FLAT does not.
+ * After the EXIT is committed, a noisy opposite tick must not abort the ENTER.
+ */
 export function shouldCancelPendingFlip(
   pending: PendingFlipSide,
   signalDirection: SignalDirection | null | undefined,
+  options?: { committed?: boolean },
 ): boolean {
   if (signalDirection == null || signalDirection === "FLAT") return false;
   if (signalDirection === "EXIT") return true;
+  if (options?.committed) return false;
   const wanted = pendingFlipFromSignal(signalDirection);
   return wanted != null && wanted !== pending;
 }
@@ -93,9 +101,11 @@ export function reservedCountForEnter(options: {
   reserved: number;
   openAndInflight: number;
   fulfillsPendingFlip: boolean;
+  closingLegStillCounted?: boolean;
 }): number {
   const reserved = Math.max(0, options.reserved);
-  const live = Math.max(0, options.openAndInflight);
+  const closing = options.fulfillsPendingFlip && options.closingLegStillCounted ? 1 : 0;
+  const live = Math.max(0, options.openAndInflight - closing);
   if (options.fulfillsPendingFlip) return live;
   return reserved;
 }
@@ -158,6 +168,7 @@ export async function writePendingFlip(options: {
   fromTokenId?: string | null;
   endDate?: Date | null;
   now?: Date;
+  committed?: boolean;
 }): Promise<void> {
   const now = options.now ?? new Date();
   const payload: PendingFlip = {
@@ -166,6 +177,7 @@ export async function writePendingFlip(options: {
     side: options.side,
     fromTokenId: options.fromTokenId ?? null,
     createdAt: now.toISOString(),
+    committed: options.committed === true,
   };
   const key = pendingFlipKey(options.strategyId, options.marketId);
   const member = pendingFlipMember(options.strategyId, options.marketId);

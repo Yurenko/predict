@@ -80,5 +80,14 @@ describe("live binary mode", () => {
         inflightOnMarket: true,
       }),
     ).toBe(false);
+    expect(
+      shouldBlockLiveFlipEnter({
+        mode: "flip",
+        action: "ENTER",
+        stillOpen: true,
+        inflightOnMarket: true,
+        leftoverGone: true,
+      }),
+    ).toBe(false);
   });
 });

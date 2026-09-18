@@ -35,6 +35,11 @@ describe("pending flip intent", () => {
     expect(shouldCancelPendingFlip("UP", "BUY")).toBe(false);
   });
 
+  it("does not abort a committed flip when the tape flickers the other way", () => {
+    expect(shouldCancelPendingFlip("DOWN", "BUY", { committed: true })).toBe(false);
+    expect(shouldCancelPendingFlip("DOWN", "EXIT", { committed: true })).toBe(true);
+  });
+
   it("lets a flip ENTER ignore leftover pending keys", () => {
     expect(
       reservedCountForEnter({ reserved: 4, openAndInflight: 0, fulfillsPendingFlip: true }),
@@ -48,6 +53,14 @@ describe("pending flip intent", () => {
     expect(
       reservedCountForEnter({ reserved: 2, openAndInflight: 2, fulfillsPendingFlip: false }),
     ).toBe(2);
+    expect(
+      reservedCountForEnter({
+        reserved: 1,
+        openAndInflight: 1,
+        fulfillsPendingFlip: true,
+        closingLegStillCounted: true,
+      }),
+    ).toBe(0);
   });
 
   it("treats a contract past endDate as no longer flippable", () => {

@@ -1,4 +1,4 @@
-import { OrderSide, TradingMode } from "@prisma/client";
+import { OrderSide, Prisma, TradingMode } from "@prisma/client";
 import { OfficialPredictionAdapter } from "@/lib/binance/prediction-adapter";
 import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { prisma } from "@/lib/db/prisma";
@@ -56,7 +56,7 @@ import {
   isFreshLiveBook,
 } from "@/lib/live/notional";
 import { isLiveDustPosition, LIVE_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
-import { isLiveFlattening } from "@/lib/live/flatten";
+import { isLiveFlattening, stampLiveVenueFlat } from "@/lib/live/flatten";
 import {
   clearExpiredPendingFlips,
   clearPendingFlip,
@@ -80,6 +80,7 @@ import { armLiveClaimAfterClose, refreshLiveAccountAfterClose } from "@/lib/live
 import {
   confirmLiveFlipExit,
   shouldImmediateFlipEnter,
+  shouldRecoverFlipEnter,
 } from "@/lib/live/flip-followthrough";
 import { selectPrimarySnapshot, tickFromSnapshot } from "@/lib/normalize/tick";
 import type { PredictionOrderbookPayload } from "@/lib/binance/sapi-wss";
@@ -101,6 +102,18 @@ async function applyLiveCloseFollowup(
   if (shouldArmLiveClaimAfterClose({ closed })) {
     armLiveClaimAfterClose(venue, ctx);
   }
+}
+
+async function markLivePositionVenueFlat(position: {
+  id: string;
+  rawPayload: unknown;
+}): Promise<void> {
+  await prisma.position.update({
+    where: { id: position.id },
+    data: {
+      rawPayload: stampLiveVenueFlat(position.rawPayload) as Prisma.InputJsonValue,
+    },
+  });
 }
 
 async function submitImmediateFlipEnter(options: {
@@ -207,6 +220,7 @@ async function submitImmediateFlipEnter(options: {
       reserved: usage.reserved,
       openAndInflight: usage.openAndInflight,
       fulfillsPendingFlip: true,
+      closingLegStillCounted: true,
     }),
   };
   const pre = evaluateRisk(
@@ -549,10 +563,13 @@ async function liveSlotUsage(): Promise<{ reserved: number; openAndInflight: num
   }
   const tokens = normalOpen.map((row) => row.tokenId);
   const inflightTokens = inflightEnter.map((row) => row.tokenId);
-  const base = reservedLivePositionCount(tokens, inflightTokens, pendingUncovered);
+  // Match paper: pending leftovers occupy reserved capacity for a *new* market,
+  // but must not inflate openAndInflight or a flip ENTER deadlocks at MAX=1.
+  const occupied = reservedLivePositionCount(tokens, inflightTokens, 0);
+  const reserved = reservedLivePositionCount(tokens, inflightTokens, pendingUncovered);
   return {
-    openAndInflight: base + extraDustSlots,
-    reserved: base + extraDustSlots,
+    openAndInflight: occupied + extraDustSlots,
+    reserved: reserved + extraDustSlots,
   };
 }
 
@@ -1050,7 +1067,10 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         }
       }
 
-      if (pending && shouldCancelPendingFlip(pending.side, signal?.direction)) {
+      if (
+        pending &&
+        shouldCancelPendingFlip(pending.side, signal?.direction, { committed: pending.committed })
+      ) {
         log.info(
           { slug: row.slug, market: market.venueMarketId, pending: pending.side, signal: signal?.direction },
           "pending flip cancelled",
@@ -1132,24 +1152,31 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         continue;
       }
 
-      // Flip: do not BUY Down while Up EXIT is still SUBMITTED / leftover OPEN.
-      // The Down ticket uses bankroll sizing, never leftover Up shares.
+      // Flip: do not BUY Down while Up is still OPEN on Binance.
+      // A leftover SUBMITTED EXIT must not block ENTER once ONGOING shares are 0.
       if (trade.paperAction === "ENTER" && oppositeCloses) {
-        const inflightOnMarket = await prisma.order.findFirst({
+        const inflightOnMarket = await prisma.order.findMany({
           where: {
             mode: TradingMode.LIVE,
             marketId: market.id,
             status: { in: LIVE_INFLIGHT_STATUSES },
             signal: { strategyId: row.id },
           },
-          select: { id: true },
+          select: { id: true, rawPayload: true },
+        });
+        const inflightEnterOnMarket = inflightOnMarket.some((item) => {
+          const raw =
+            item.rawPayload && typeof item.rawPayload === "object" && !Array.isArray(item.rawPayload)
+              ? (item.rawPayload as Record<string, unknown>)
+              : {};
+          return raw.action == null || raw.action === "ENTER";
         });
         if (
           shouldBlockLiveFlipEnter({
             mode: binaryMode,
             action: trade.paperAction,
             stillOpen: Boolean(openUp || openDown),
-            inflightOnMarket: Boolean(inflightOnMarket),
+            inflightOnMarket: inflightEnterOnMarket,
           })
         ) {
           skips.inflight += 1;
@@ -1252,9 +1279,36 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
             fromTokenId: open?.tokenId,
             endDate: market.topic.endDate,
             now,
+            committed: pending?.committed === true,
           });
         }
       }
+      const recoverSide = flipWanted ?? pending?.side ?? null;
+      const submitFlipEnter = (state: RiskSnapshot, wanted: PendingFlipSide) =>
+        submitImmediateFlipEnter({
+          venue,
+          ctx,
+          strategyId: row.id,
+          strategySlug: row.slug,
+          market,
+          primaryTokenId,
+          primaryOutcomeId: tick.outcomeId,
+          wanted,
+          chance: asNumber(latest.chance) ?? asNumber(latest.midPrice),
+          now,
+          dataAgeMs,
+          timeToExpirySec: ctxStrategy.timeToExpirySec,
+          upBook: {
+            bestBid: tick.bestBid,
+            bestAsk: tick.bestAsk,
+            lastPrice: tick.lastPrice,
+            liquidity: tick.liquidity,
+            bidDepth: tick.bidDepth,
+            askDepth: tick.askDepth,
+          },
+          limits,
+          riskState: state,
+        });
 
       const upBook =
         action === "EXIT" && !freshLive
@@ -1294,10 +1348,37 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           continue;
         }
         if (!(exitShares > 1e-8)) {
-          log.info(
-            { slug: row.slug, market: market.venueMarketId },
-            "live EXIT skipped: Binance ONGOING shares are 0",
-          );
+          if (
+            shouldRecoverFlipEnter({
+              wantedSide: recoverSide,
+              managementExit: Boolean(managementExit),
+              venueShares: exitShares,
+            }) &&
+            recoverSide
+          ) {
+            await writePendingFlip({
+              strategyId: row.id,
+              marketId: market.id,
+              side: recoverSide,
+              fromTokenId: open.tokenId,
+              endDate: market.topic.endDate,
+              now,
+              committed: true,
+            });
+            await markLivePositionVenueFlat(open);
+            log.info(
+              { slug: row.slug, market: market.venueMarketId, wanted: recoverSide },
+              "live flip enter recovered: Binance ONGOING shares are 0",
+            );
+            const enter = await submitFlipEnter(riskState, recoverSide);
+            submitted += enter.submitted;
+            riskState = enter.riskState;
+          } else {
+            log.info(
+              { slug: row.slug, market: market.venueMarketId },
+              "live EXIT skipped: Binance ONGOING shares are 0",
+            );
+          }
           continue;
         }
         const exitQuote = await quoteLiveExitSell({
@@ -1470,59 +1551,61 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
               oppositeCloses,
               exitPlaced: true,
               managementExit: Boolean(managementExit),
-              wantedSide: flipWanted,
+              wantedSide: recoverSide,
             }) &&
-            result.venueOrderId
+            recoverSide
           ) {
-            const confirm = await confirmLiveFlipExit({
-              venue,
-              walletAddress: ctx.walletAddress,
-              venueOrderId: result.venueOrderId,
-              tokenId,
+            await writePendingFlip({
+              strategyId: row.id,
+              marketId: market.id,
+              side: recoverSide,
+              fromTokenId: open?.tokenId,
+              endDate: market.topic.endDate,
+              now,
+              committed: true,
             });
-            log.info(
-              {
-                slug: row.slug,
-                market: market.venueMarketId,
-                ...confirm,
-                venueOrderId: result.venueOrderId,
-              },
-              "live flip exit confirm",
-            );
-            if (confirm.ready && flipWanted) {
-              if (confirm.order) {
-                try {
-                  await applyOfficialLiveOrder(confirm.order);
-                } catch (error) {
-                  log.warn({ err: String(error), venueOrderId: result.venueOrderId }, "live flip fill apply skipped");
-                }
-              }
-              const enter = await submitImmediateFlipEnter({
+            if (!result.venueOrderId) {
+              log.info(
+                { slug: row.slug, market: market.venueMarketId },
+                "live flip exit placed without venueOrderId; pending committed",
+              );
+            } else {
+              const confirm = await confirmLiveFlipExit({
                 venue,
-                ctx,
-                strategyId: row.id,
-                strategySlug: row.slug,
-                market,
-                primaryTokenId,
-                primaryOutcomeId: tick.outcomeId,
-                wanted: flipWanted,
-                chance: asNumber(latest.chance) ?? asNumber(latest.midPrice),
-                now,
-                dataAgeMs,
-                timeToExpirySec: ctxStrategy.timeToExpirySec,
-                upBook: {
-                  bestBid: tick.bestBid,
-                  bestAsk: tick.bestAsk,
-                  lastPrice: tick.lastPrice,
-                  liquidity: tick.liquidity,
-                  bidDepth: tick.bidDepth,
-                  askDepth: tick.askDepth,
-                },
-                limits,
-                riskState,
+                walletAddress: ctx.walletAddress,
+                venueOrderId: result.venueOrderId,
+                tokenId,
               });
-              submitted += enter.submitted;
-              riskState = enter.riskState;
+              log.info(
+                {
+                  slug: row.slug,
+                  market: market.venueMarketId,
+                  ...confirm,
+                  venueOrderId: result.venueOrderId,
+                },
+                "live flip exit confirm",
+              );
+              if (confirm.failed) {
+                await clearPendingFlip(row.id, market.id);
+              } else if (confirm.ready) {
+                if (open) {
+                  try {
+                    await markLivePositionVenueFlat(open);
+                  } catch (error) {
+                    log.warn({ err: String(error), positionId: open.id }, "live flip venue-flat stamp skipped");
+                  }
+                }
+                if (confirm.order) {
+                  try {
+                    await applyOfficialLiveOrder(confirm.order);
+                  } catch (error) {
+                    log.warn({ err: String(error), venueOrderId: result.venueOrderId }, "live flip fill apply skipped");
+                  }
+                }
+                const enter = await submitFlipEnter(riskState, recoverSide);
+                submitted += enter.submitted;
+                riskState = enter.riskState;
+              }
             }
           }
         }

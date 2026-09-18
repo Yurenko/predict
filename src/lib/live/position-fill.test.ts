@@ -165,6 +165,13 @@ describe("LIVE partial order state", () => {
         avgPrice: 0.5,
       }),
     ).toBe(true);
+    expect(
+      isLiveDustPosition({
+        rawPayload: { liveDust: true },
+        shares: 3.1,
+        avgPrice: 0.55,
+      }),
+    ).toBe(true);
   });
 });
 

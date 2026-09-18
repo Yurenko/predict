@@ -16,12 +16,27 @@ export function shouldImmediateFlipEnter(options: {
   exitPlaced: boolean;
   managementExit: boolean;
   wantedSide: PendingFlipSide | null;
+  venueSharesGone?: boolean;
 }): boolean {
   return (
     options.oppositeCloses &&
-    options.exitPlaced &&
     !options.managementExit &&
-    options.wantedSide != null
+    options.wantedSide != null &&
+    (options.exitPlaced || options.venueSharesGone === true)
+  );
+}
+
+/** Local OPEN leftover after a filled EXIT: Binance already shows 0 shares. */
+export function shouldRecoverFlipEnter(options: {
+  wantedSide: PendingFlipSide | null;
+  managementExit: boolean;
+  venueShares: number | null;
+}): boolean {
+  return (
+    options.wantedSide != null &&
+    !options.managementExit &&
+    options.venueShares != null &&
+    options.venueShares <= 1e-8
   );
 }
 

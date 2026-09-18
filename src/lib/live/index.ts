@@ -11,6 +11,7 @@ export {
   confirmLiveFlipExit,
   liveFlipExitConfirmResult,
   shouldImmediateFlipEnter,
+  shouldRecoverFlipEnter,
 } from "@/lib/live/flip-followthrough";
 export { claimLiveWinnings, syncLivePositionsFromVenue } from "@/lib/live/venue-sync";
 export {

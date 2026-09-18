@@ -22,15 +22,17 @@ export function liveOppositeCloses(mode: LiveBinaryMode): boolean {
 
 /**
  * Flip ENTER must wait until the previous leg is actually closed.
- * Inflight EXIT on the other token would otherwise let Down open at the same time as leftover Up.
+ * Inflight EXIT does not block once Binance ONGOING shares are already 0.
  */
 export function shouldBlockLiveFlipEnter(options: {
   mode: LiveBinaryMode;
   action: PaperAction;
   stillOpen: boolean;
   inflightOnMarket: boolean;
+  leftoverGone?: boolean;
 }): boolean {
   if (options.mode !== "flip" || options.action !== "ENTER") return false;
+  if (options.leftoverGone) return false;
   return options.stillOpen || options.inflightOnMarket;
 }
 

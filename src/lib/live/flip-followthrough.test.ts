@@ -3,6 +3,7 @@ import {
   liveFlipExitConfirmResult,
   officialFlipExitStatus,
   shouldImmediateFlipEnter,
+  shouldRecoverFlipEnter,
   confirmLiveFlipExit,
 } from "./flip-followthrough";
 
@@ -34,10 +35,45 @@ describe("shouldImmediateFlipEnter", () => {
     ).toBe(false);
     expect(
       shouldImmediateFlipEnter({
+        oppositeCloses: true,
+        exitPlaced: false,
+        managementExit: false,
+        wantedSide: "DOWN",
+        venueSharesGone: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldImmediateFlipEnter({
         oppositeCloses: false,
         exitPlaced: true,
         managementExit: false,
         wantedSide: "DOWN",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldRecoverFlipEnter", () => {
+  it("enters the other side when the EXIT already flattened Binance inventory", () => {
+    expect(
+      shouldRecoverFlipEnter({
+        wantedSide: "DOWN",
+        managementExit: false,
+        venueShares: 0,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRecoverFlipEnter({
+        wantedSide: "DOWN",
+        managementExit: false,
+        venueShares: 2.4,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRecoverFlipEnter({
+        wantedSide: "DOWN",
+        managementExit: true,
+        venueShares: 0,
       }),
     ).toBe(false);
   });
