@@ -21,6 +21,7 @@ function limits(over: Partial<RiskLimits> = {}): RiskLimits {
     cooldownMs: 900_000,
     consecutiveLossesForCooldown: 5,
     liveTradingEnabled: false,
+    maxEntryAsk: 0.75,
     ...over,
   };
 }
@@ -139,6 +140,13 @@ describe("evaluateRisk", () => {
     );
     expect(evaluateRisk(intent({ liquidity: null }), state(lim), lim).allowed).toBe(false);
     expect(evaluateRisk(intent({ estimatedSlippageBps: 50_000 }), state(lim), lim).allowed).toBe(
+      true,
+    );
+    expect(evaluateRisk(intent({ bestAsk: 0.85 }), state(lim), lim).allowed).toBe(false);
+    expect(
+      evaluateRisk(intent({ bestAsk: 0.74, proposedFillPrice: 0.81 }), state(lim), lim).allowed,
+    ).toBe(false);
+    expect(evaluateRisk(intent({ action: "EXIT", bestAsk: 0.85, bestBid: 0.84 }), state(lim), lim).allowed).toBe(
       true,
     );
   });

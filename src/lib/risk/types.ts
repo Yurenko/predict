@@ -18,6 +18,8 @@ export interface RiskLimits {
   cooldownMs: number;
   consecutiveLossesForCooldown: number;
   liveTradingEnabled: boolean;
+  /** ENTER ask cap; pending_flip cannot bypass. Matches strategy maxBuyAsk. */
+  maxEntryAsk: number;
 }
 
 export interface RiskSnapshot {

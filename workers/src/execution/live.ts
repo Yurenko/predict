@@ -7,6 +7,7 @@ import { asNumber } from "@/lib/normalize/numbers";
 import { buildStrategyContext, clampObservedAt, rowsAtOrBefore } from "@/lib/backtest/context";
 import type { UnderlyingTick } from "@/lib/backtest/types";
 import { evaluateRisk } from "@/lib/risk/evaluate";
+import { shouldClearPendingFlipOnBlockedEnter } from "@/lib/risk/entry-ask";
 import { limitsFromEnv } from "@/lib/risk/limits";
 import { loadRiskState, persistRiskDecision } from "@/lib/risk/persist";
 import type { RiskLimits, RiskSnapshot } from "@/lib/risk/types";
@@ -58,7 +59,6 @@ import {
   pendingFlipFromSignal,
   pendingFlipReservesSlot,
   reservedCountForEnter,
-  pendingFlipSignal,
   readPendingFlip,
   shouldCancelPendingFlip,
   writePendingFlip,
@@ -583,19 +583,17 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         await clearPendingFlip(row.id, market.id);
         pending = null;
       }
-      if (!signal && !pending) {
+      if (!signal) {
+        if (pending) {
+          log.info(
+            { slug: row.slug, market: market.venueMarketId, pending: pending.side },
+            "pending flip waits for evaluate (no pending_flip ENTER)",
+          );
+        }
         skips.noSignal += 1;
         continue;
       }
-      const actingSignal =
-        signal ??
-        pendingFlipSignal({
-          strategyId: row.slug,
-          marketId: market.id,
-          now,
-          side: pending!.side,
-          chance: asNumber(latest.chance) ?? asNumber(latest.midPrice),
-        });
+      const actingSignal = signal;
       const primaryTokenId = tick.tokenId;
       if (!primaryTokenId) continue;
 
@@ -886,6 +884,8 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           estimatedPriceImpact: null,
           quoteExpireAt: null,
           dataAgeMs,
+          proposedFillPrice:
+            action === "ENTER" ? (quote?.averagePrice ?? priced.bestAsk) : priced.bestBid,
           ignoreMinTimeToExpiry: action === "ENTER" && Boolean(pending),
         },
         riskState,
@@ -896,7 +896,9 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         if (
           action === "ENTER" &&
           pending &&
-          pre.checks.some((check) => !check.passed && check.name === "min_time_to_expiry")
+          shouldClearPendingFlipOnBlockedEnter(
+            pre.checks.filter((check) => !check.passed).map((check) => check.name),
+          )
         ) {
           await clearPendingFlip(row.id, market.id);
         }

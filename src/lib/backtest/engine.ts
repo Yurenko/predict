@@ -63,6 +63,7 @@ function riskLimitsForBacktest(config: BacktestConfig): RiskLimits {
     cooldownMs: 0,
     consecutiveLossesForCooldown: 1_000_000,
     liveTradingEnabled: false,
+    maxEntryAsk: 1,
   };
 }
 

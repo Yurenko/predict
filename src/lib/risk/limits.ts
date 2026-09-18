@@ -18,6 +18,7 @@ export function limitsFromEnv(): RiskLimits {
     cooldownMs: env.RISK_COOLDOWN_MS,
     consecutiveLossesForCooldown: env.RISK_CONSECUTIVE_LOSSES,
     liveTradingEnabled: isLiveTradingEnabled(),
+    maxEntryAsk: env.MAX_ENTRY_ASK,
   };
 }
 

@@ -69,6 +69,7 @@ const envSchema = z.object({
   MIN_LIQUIDITY_USDT: z.coerce.number().nonnegative().default(100),
   MIN_TIME_TO_EXPIRY_SEC: z.coerce.number().int().nonnegative().default(60),
   SAFETY_MARGIN: z.coerce.number().nonnegative().default(0.005),
+  MAX_ENTRY_ASK: z.coerce.number().min(0).max(1).default(0.75),
   RISK_COOLDOWN_MS: z.coerce.number().int().nonnegative().default(900_000),
   RISK_CONSECUTIVE_LOSSES: z.coerce.number().int().positive().default(5),
   PAPER_LOOP_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),

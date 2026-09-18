@@ -26,6 +26,7 @@ function limits(): RiskLimits {
     cooldownMs: 900_000,
     consecutiveLossesForCooldown: 5,
     liveTradingEnabled: false,
+    maxEntryAsk: 0.75,
   };
 }
 

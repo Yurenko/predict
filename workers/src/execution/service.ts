@@ -48,7 +48,6 @@ import {
   pendingFlipFromSignal,
   pendingFlipReservesSlot,
   reservedCountForEnter,
-  pendingFlipSignal,
   readPendingFlip,
   shouldCancelPendingFlip,
   writePendingFlip,
@@ -502,17 +501,9 @@ export async function runPaperOnce(): Promise<{
         await clearPendingFlip(row.id, market.id);
         pending = null;
       }
-      if (!signal && !pending) continue;
+      if (!signal) continue;
 
-      const actingSignal =
-        signal ??
-        pendingFlipSignal({
-          strategyId: row.slug,
-          marketId: market.id,
-          now,
-          side: pending!.side,
-          chance: asNumber(latest.chance) ?? asNumber(latest.midPrice),
-        });
+      const actingSignal = signal;
 
       const primaryTokenId = tick.tokenId;
       if (!primaryTokenId) continue;

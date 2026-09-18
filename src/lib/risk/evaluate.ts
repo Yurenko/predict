@@ -1,6 +1,7 @@
 import { RiskEventType, SystemEventLevel, TradingMode } from "@prisma/client";
 import type { RiskCheckResult } from "@/lib/types/domain";
 import type { RiskDecision, RiskEventDraft, RiskIntent, RiskLimits, RiskSnapshot } from "@/lib/risk/types";
+import { entryAskAllowed } from "@/lib/risk/entry-ask";
 import { rollDailyWindow } from "@/lib/risk/state";
 
 function check(
@@ -272,6 +273,19 @@ export function evaluateRisk(
   checks.push(check("max_price_impact", impactOk, `impact=${impact}`));
   if (!impactOk) {
     events.push(event(RiskEventType.MAX_PRICE_IMPACT, "price impact above cap"));
+  }
+
+  const entryPrice = intent.proposedFillPrice ?? intent.bestAsk;
+  const askOk = !entry || entryAskAllowed(entryPrice, limits.maxEntryAsk);
+  checks.push(
+    check(
+      "max_entry_ask",
+      askOk,
+      `ask=${entryPrice} vs max ${limits.maxEntryAsk}`,
+    ),
+  );
+  if (!askOk) {
+    events.push(event(RiskEventType.ABNORMAL_FILL, "entry ask above cap"));
   }
 
   const allowed = checks.every((item) => item.passed);
