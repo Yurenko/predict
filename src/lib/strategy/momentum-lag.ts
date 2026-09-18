@@ -123,6 +123,7 @@ export function spotWindowSide(options: {
     };
   }
   if (candle === 0 && tape !== 0) {
+    if (ignoreReversal) return null;
     const side: SpotWindowSide = tape < 0 ? "down" : "up";
     return {
       side,

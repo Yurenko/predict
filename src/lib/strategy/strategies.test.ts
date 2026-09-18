@@ -262,6 +262,31 @@ describe("spotWindowSide", () => {
       }),
     ).toBeNull();
   });
+
+  it("does not take a near-start 2m tape in the last 2m of a 5m window", () => {
+    expect(
+      spotWindowSide({
+        startPrice: 749.25,
+        spot: 749.4,
+        return2m: -0.00047,
+        minVsStart: 0.0005,
+        minReturn1m: 0.0003,
+        timeToExpirySec: 24,
+        windowDurationSec: 300,
+      }),
+    ).toBeNull();
+    const withTime = spotWindowSide({
+      startPrice: 749.25,
+      spot: 749.4,
+      return2m: -0.00047,
+      minVsStart: 0.0005,
+      minReturn1m: 0.0003,
+      timeToExpirySec: 180,
+      windowDurationSec: 300,
+    });
+    expect(withTime?.side).toBe("down");
+    expect(withTime?.reason).toMatch(/біля старту/);
+  });
 });
 
 describe("underlying-momentum-lag", () => {
