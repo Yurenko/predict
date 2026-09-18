@@ -2,7 +2,6 @@ import { OrderSide, Prisma, TradingMode } from "@prisma/client";
 import { OfficialPredictionAdapter } from "@/lib/binance/prediction-adapter";
 import { env, isLiveTradingEnabled } from "@/lib/config/env";
 import { prisma } from "@/lib/db/prisma";
-import { redis } from "@/lib/db/redis";
 import { childLogger } from "@/lib/logger";
 import { asNumber } from "@/lib/normalize/numbers";
 import { buildStrategyContext, clampObservedAt, rowsAtOrBefore } from "@/lib/backtest/context";
@@ -16,7 +15,6 @@ import { readLiveOrderbook } from "@/lib/ingest/raw-store";
 import { heldOrTradableMarketQuery, isShortCryptoUpDownRow } from "@/lib/markets/horizon";
 import { isExpiredAt } from "@/lib/markets/settlement";
 import { sleep } from "@/lib/binance/rate-limit";
-import { readRecordControl } from "@/lib/record/control";
 import {
   fetchOfficialPaperQuote,
   flattenExpiredPositions,
@@ -44,11 +42,6 @@ import {
 import { outcomeIsDownToken } from "@/lib/normalize/markets";
 import { quoteLiveExitSell } from "@/lib/live/exit-quote";
 import { exitIntentFromOutcome } from "@/lib/live/intent-label";
-import {
-  evaluateLivePositionManagement,
-  updateLivePositionManagementState,
-  managementLockKey,
-} from "@/lib/live/position-management";
 import { readVenueTradableShares } from "@/lib/live/venue-shares";
 import {
   LIVE_MIN_ORDER_USDT,
@@ -149,10 +142,6 @@ async function countOpenLivePositions(): Promise<number> {
   return prisma.position.count({
     where: { mode: TradingMode.LIVE, status: "OPEN" },
   });
-}
-
-function tteSecSafe(value: number | null): boolean {
-  return value != null && Number.isFinite(value) && value > 60;
 }
 
 async function pruneExpiredLivePendings(now: Date): Promise<void> {
@@ -394,216 +383,15 @@ export async function settleExpiredLivePositions(): Promise<{ filled: number }> 
 }
 
 
-const realtimeManagementInFlight = new Set<string>();
-
 /**
- * Fast LIVE exit path driven directly by the prediction-market orderbook WS.
- * This intentionally handles only price-based protection (TP/trailing). The
- * normal worker cycle remains responsible for strategy signals and reversal.
+ * Take-profit / trailing / strong-reversal used to exit here from the
+ * prediction WS. Live now matches Paper: only the strategy cycle closes.
  */
 export async function runLiveRealtimePositionManagement(
-  book: PredictionOrderbookPayload,
-  ctx: LiveTradeContext,
-  venue: OfficialPredictionAdapter,
-): Promise<void> {
-  if (!isLiveTradingEnabled()) return;
-
-  const market = await prisma.market.findUnique({
-    where: { venueMarketId: String(book.marketId) },
-    include: {
-      topic: true,
-      outcomes: true,
-      snapshots: { orderBy: { observedAt: "desc" }, take: 1 },
-      positions: {
-        where: { mode: TradingMode.LIVE, status: "OPEN" },
-        include: { strategy: true, outcome: true },
-      },
-    },
-  });
-  if (!market || market.positions.length === 0) return;
-
-  const control = await readRecordControl();
-  if (control.desired !== "running" || !control.sessionId) return;
-
-  const key = market.id;
-  if (realtimeManagementInFlight.has(key)) return;
-  realtimeManagementInFlight.add(key);
-
-  try {
-    const now = new Date();
-    const tte = market.topic.endDate
-      ? Math.max(0, (market.topic.endDate.getTime() - now.getTime()) / 1000)
-      : null;
-    if (tte == null || tte <= env.LIVE_TRAIL_MIN_TTE_SEC) return;
-
-    const upBook = {
-      bestBid: asNumber(book.bestBid),
-      bestAsk: asNumber(book.bestAsk),
-      lastPrice: null,
-    };
-
-    for (const position of market.positions) {
-      if (isLiveDustPosition({ rawPayload: position.rawPayload, shares: position.shares, avgPrice: position.avgPrice })) {
-        continue;
-      }
-
-      const down = outcomeIsDownToken(position.outcome?.name ?? null);
-      const priced = down ? invertBinaryBook(upBook) : upBook;
-      const currentPrice = priced.bestBid;
-      if (!(currentPrice != null && currentPrice >= 0 && currentPrice <= 1)) continue;
-
-      const state = updateLivePositionManagementState(position.rawPayload, currentPrice, now);
-      if (state.changed) {
-        await prisma.position.update({
-          where: { id: position.id },
-          data: { rawPayload: state.rawPayload },
-        });
-      }
-
-      const decision = evaluateLivePositionManagement({
-        entryPrice: Number(position.avgPrice),
-        currentPrice,
-        timeToExpirySec: tte,
-        isDownPosition: down,
-        signal: null,
-        state: state.state,
-        config: {
-          takeProfitPrice: env.LIVE_TAKE_PROFIT_PRICE,
-          takeProfitMinTteSec: env.LIVE_TAKE_PROFIT_MIN_TTE_SEC,
-          trailActivationPrice: env.LIVE_TRAIL_ACTIVATION_PRICE,
-          trailMinDistance: env.LIVE_TRAIL_MIN_DISTANCE,
-          trailPercent: env.LIVE_TRAIL_PERCENT,
-          trailMinProfit: env.LIVE_TRAIL_MIN_PROFIT,
-          trailMinTteSec: env.LIVE_TRAIL_MIN_TTE_SEC,
-          reversalMinTteSec: env.LIVE_REVERSAL_MIN_TTE_SEC,
-          reversalMinConfidence: env.LIVE_REVERSAL_MIN_CONFIDENCE,
-          reversalMinNetEdge: env.LIVE_REVERSAL_MIN_NET_EDGE,
-          reversalMinLoss: env.LIVE_REVERSAL_MIN_LOSS,
-        },
-      });
-
-      if (!decision || (decision.kind !== "TAKE_PROFIT" && decision.kind !== "TRAILING_STOP")) continue;
-
-      const inflight = await prisma.order.findFirst({
-        where: {
-          mode: TradingMode.LIVE,
-          positionId: position.id,
-          status: { in: LIVE_INFLIGHT_STATUSES },
-        },
-        select: { id: true },
-      });
-      if (inflight) continue;
-
-      let shares = Number(position.shares);
-      try {
-        const venueShares = await readVenueTradableShares(venue, ctx.walletAddress, position.tokenId);
-        if (venueShares != null) shares = venueShares;
-      } catch (error) {
-        log.warn({ err: String(error), positionId: position.id }, "realtime LIVE exit skipped: shares unavailable");
-        continue;
-      }
-      if (!(shares > 1e-8)) continue;
-
-      const limits = limitsFromEnv();
-      const exitQuote = await quoteLiveExitSell({
-        tokenId: position.tokenId,
-        shares,
-        bestBid: priced.bestBid,
-        bestAsk: priced.bestAsk,
-        lastPrice: priced.lastPrice,
-        avgPrice: Number(position.avgPrice),
-        slippageBps: limits.maxSlippageBps,
-      });
-      if (exitQuote.belowMin || !exitQuote.quote) {
-        log.warn(
-          { positionId: position.id, market: market.venueMarketId, currentPrice, shares },
-          "realtime LIVE exit quote unavailable",
-        );
-        continue;
-      }
-
-      const strategyId = position.strategy?.slug ?? "realtime-management";
-      const signal = manualCloseSignal({
-        strategyId,
-        marketId: market.id,
-        now,
-        chance: currentPrice,
-      });
-      const snap = market.snapshots[0];
-      const request: PaperTradeRequest = {
-        mode: TradingMode.LIVE,
-        action: "EXIT",
-        strategyId,
-        marketId: market.id,
-        outcomeId: position.outcomeId ?? undefined,
-        tokenId: position.tokenId,
-        signal,
-        book: {
-          bestBid: priced.bestBid,
-          bestAsk: priced.bestAsk,
-          lastPrice: priced.lastPrice,
-          liquidity: asNumber(snap?.liquidity),
-          bidDepth: asNumber(snap?.bidDepth),
-          askDepth: asNumber(snap?.askDepth),
-          timeToExpirySec: tte,
-          dataAgeMs: Math.max(0, now.getTime() - book.updateTimestampMs),
-        },
-        quote: exitQuote.quote,
-        now,
-        requestedNotional: exitQuote.notional,
-        maxPriceImpact: limits.maxPriceImpact,
-        positionSide: position.side,
-        positionId: position.id,
-        orderSide: OrderSide.SELL,
-        orderType: "MARKET",
-        exitIntent: decision.kind === "TAKE_PROFIT" ? "TAKE_PROFIT" : "TRAILING_STOP",
-        idempotencyWindowMs: env.LIVE_IDEMPOTENCY_MS,
-        idempotencySalt: `realtime-${decision.kind}-${shares.toFixed(8)}`,
-      };
-
-      log.info(
-        {
-          positionId: position.id,
-          venuePositionId: position.venuePositionId,
-          market: market.venueMarketId,
-          currentPrice,
-          entryPrice: Number(position.avgPrice),
-          peakPrice: state.state.peakPrice,
-          tteSec: tte,
-          kind: decision.kind,
-        },
-        "live realtime position management exit",
-      );
-
-      const riskState = await loadRiskState();
-      const result = await executeLiveTrade(request, riskState, limits, venue, ctx);
-      if (result.placed) {
-        await persistPaperTrade({ request, result, signal });
-        await redis.set(
-          managementLockKey(strategyId, market.id),
-          JSON.stringify({
-            blockedDirection: down ? "SELL" : "BUY",
-            kind: decision.kind,
-          }),
-          "EX",
-          3600,
-        );
-        log.info(
-          { positionId: position.id, venueOrderId: result.venueOrderId, kind: decision.kind },
-          "live realtime position management exit submitted",
-        );
-        await applyLiveCloseFollowup(venue, ctx, 1);
-      } else {
-        log.warn(
-          { positionId: position.id, reason: result.reason, kind: decision.kind },
-          "live realtime position management exit not submitted",
-        );
-      }
-    }
-  } finally {
-    realtimeManagementInFlight.delete(key);
-  }
-}
+  _book: PredictionOrderbookPayload,
+  _ctx: LiveTradeContext,
+  _venue: OfficialPredictionAdapter,
+): Promise<void> {}
 
 export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredictionAdapter): Promise<{
   enabled: number;
@@ -761,9 +549,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
     }
 
     for (const row of enabled) {
-      // Position management runs independently of entry-signal availability.
-      // This is important for LIVE: a profitable position must be able to take
-      // profit even when the strategy does not emit a fresh signal on this tick.
       const opens = await prisma.position.findMany({
         where: {
           mode: TradingMode.LIVE,
@@ -790,85 +575,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
       if (!strategy) continue;
       const signal = strategy.evaluate(ctxStrategy);
 
-      let managementExit: {
-        positionId: string;
-        reason: string;
-        kind: "TAKE_PROFIT" | "TRAILING_STOP" | "STRONG_REVERSAL";
-        blockedDirection: "BUY" | "SELL";
-      } | null = null;
-
-      if (freshLive && tteSecSafe(ctxStrategy.timeToExpirySec)) {
-        const candidates = [openUp, openDown].filter(Boolean);
-        for (const position of candidates) {
-          if (!position) continue;
-          const down = outcomeIsDownToken(position.outcome?.name ?? null);
-          const priced = down
-            ? invertBinaryBook({
-                bestBid: tick.bestBid,
-                bestAsk: tick.bestAsk,
-                lastPrice: tick.lastPrice,
-              })
-            : { bestBid: tick.bestBid, bestAsk: tick.bestAsk, lastPrice: tick.lastPrice };
-          const currentPrice = priced.bestBid;
-          if (currentPrice == null) continue;
-
-          const managementState = updateLivePositionManagementState(
-            position.rawPayload,
-            currentPrice,
-            now,
-          );
-          if (managementState.changed) {
-            await prisma.position.update({
-              where: { id: position.id },
-              data: { rawPayload: managementState.rawPayload },
-            });
-          }
-
-          const decision = evaluateLivePositionManagement({
-            entryPrice: Number(position.avgPrice),
-            currentPrice,
-            timeToExpirySec: ctxStrategy.timeToExpirySec,
-            isDownPosition: down,
-            signal,
-            state: managementState.state,
-            config: {
-              takeProfitPrice: env.LIVE_TAKE_PROFIT_PRICE,
-              takeProfitMinTteSec: env.LIVE_TAKE_PROFIT_MIN_TTE_SEC,
-              trailActivationPrice: env.LIVE_TRAIL_ACTIVATION_PRICE,
-              trailMinDistance: env.LIVE_TRAIL_MIN_DISTANCE,
-              trailPercent: env.LIVE_TRAIL_PERCENT,
-              trailMinProfit: env.LIVE_TRAIL_MIN_PROFIT,
-              trailMinTteSec: env.LIVE_TRAIL_MIN_TTE_SEC,
-              reversalMinTteSec: env.LIVE_REVERSAL_MIN_TTE_SEC,
-              reversalMinConfidence: env.LIVE_REVERSAL_MIN_CONFIDENCE,
-              reversalMinNetEdge: env.LIVE_REVERSAL_MIN_NET_EDGE,
-              reversalMinLoss: env.LIVE_REVERSAL_MIN_LOSS,
-            },
-          });
-          if (decision) {
-            managementExit = {
-              positionId: position.id,
-              reason: decision.reason,
-              kind: decision.kind,
-              blockedDirection: down ? "SELL" : "BUY",
-            };
-            log.info(
-              {
-                positionId: position.id,
-                market: market.venueMarketId,
-                kind: decision.kind,
-                currentPrice,
-                entryPrice: Number(position.avgPrice),
-                peakPrice: managementState.state.peakPrice,
-                tteSec: ctxStrategy.timeToExpirySec,
-              },
-              "live position management exit",
-            );
-            break;
-          }
-        }
-      }
-
       if (pending && shouldCancelPendingFlip(pending.side, signal?.direction)) {
         log.info(
           { slug: row.slug, market: market.venueMarketId, pending: pending.side, signal: signal?.direction },
@@ -877,23 +583,11 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         await clearPendingFlip(row.id, market.id);
         pending = null;
       }
-      if (!signal && !pending && !managementExit) {
+      if (!signal && !pending) {
         skips.noSignal += 1;
         continue;
       }
-      const managementSignal = managementExit
-        ? {
-            ...manualCloseSignal({
-              strategyId: row.slug,
-              marketId: market.id,
-              now,
-              chance: asNumber(latest.chance) ?? asNumber(latest.midPrice),
-            }),
-            reason: managementExit.reason,
-          }
-        : null;
       const actingSignal =
-        managementSignal ??
         signal ??
         pendingFlipSignal({
           strategyId: row.slug,
@@ -908,16 +602,12 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
       // Independent: Up and Down are separate legs; only EXIT closes.
       // Flip: opposite signal EXITs the held leg first. The other side opens
       // on a later cycle if evaluate still wants it (Paper delayed-fill).
-      const managedOpen = managementExit
-        ? tradableOpens.find((item) => item.id === managementExit.positionId) ?? null
-        : null;
-
       const trade = resolveBinaryWorkerTrade({
         direction: actingSignal.direction,
-        hasOpenUp: managementExit ? Boolean(managedOpen && managedOpen.id === openUp?.id) : Boolean(openUp),
-        hasOpenDown: managementExit ? Boolean(managedOpen && managedOpen.id === openDown?.id) : Boolean(openDown),
-        openUpTokenId: managementExit && managedOpen?.id !== openUp?.id ? undefined : openUp?.tokenId,
-        openDownTokenId: managementExit && managedOpen?.id !== openDown?.id ? undefined : openDown?.tokenId,
+        hasOpenUp: Boolean(openUp),
+        hasOpenDown: Boolean(openDown),
+        openUpTokenId: openUp?.tokenId,
+        openDownTokenId: openDown?.tokenId,
         oppositeCloses,
         primaryTokenId,
         primaryOutcomeId: tick.outcomeId,
@@ -986,33 +676,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
       const action = trade.paperAction;
       const tokenId = trade.tokenId;
 
-      if (action === "ENTER" && !managementExit) {
-        const rawLock = await redis.get(managementLockKey(row.id, market.id));
-        if (rawLock) {
-          let blockedDirection: "BUY" | "SELL" | null = null;
-          try {
-            const parsed = JSON.parse(rawLock) as { blockedDirection?: unknown };
-            blockedDirection =
-              parsed.blockedDirection === "BUY" || parsed.blockedDirection === "SELL"
-                ? parsed.blockedDirection
-                : null;
-          } catch {
-            blockedDirection = null;
-          }
-          if (blockedDirection && actingSignal.direction === blockedDirection) {
-            skips.hold += 1;
-            log.info(
-              { slug: row.slug, market: market.venueMarketId, blockedDirection },
-              "live entry blocked after profit-protection exit until direction changes",
-            );
-            continue;
-          }
-          if (blockedDirection && actingSignal.direction !== blockedDirection) {
-            await redis.del(managementLockKey(row.id, market.id));
-          }
-        }
-      }
-
       if (action === "EXIT" && !open) {
         skips.hold += 1;
         continue;
@@ -1064,7 +727,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
       let flipWanted: PendingFlipSide | null = null;
       if (
         oppositeCloses &&
-        !managementExit &&
         action === "EXIT" &&
         signal &&
         (signal.direction === "BUY" || signal.direction === "SELL")
@@ -1124,7 +786,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           if (
             shouldRecoverFlipEnter({
               wantedSide: recoverSide,
-              managementExit: Boolean(managementExit),
+              managementExit: false,
               venueShares: exitShares,
             }) &&
             recoverSide
@@ -1300,17 +962,6 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         }
         if (result.placed && action === "EXIT") {
           closed += 1;
-          if (managementExit && (managementExit.kind === "TAKE_PROFIT" || managementExit.kind === "TRAILING_STOP")) {
-            await redis.set(
-              managementLockKey(row.id, market.id),
-              JSON.stringify({
-                blockedDirection: managementExit.blockedDirection,
-                kind: managementExit.kind,
-              }),
-              "EX",
-              3600,
-            );
-          }
           riskState = {
             ...riskState,
             openPositions: await reservedLiveSlots(),
@@ -1319,7 +970,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
             shouldConfirmFlipExit({
               oppositeCloses,
               exitPlaced: true,
-              managementExit: Boolean(managementExit),
+              managementExit: false,
               wantedSide: recoverSide,
             }) &&
             recoverSide

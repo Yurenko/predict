@@ -4,7 +4,7 @@ import { runRestSyncOnce } from "../../../workers/src/collectors/rest-sync";
 import { startPredictionWsCollector } from "../../../workers/src/collectors/prediction-ws";
 import { startUnderlyingWsCollector } from "../../../workers/src/collectors/underlying-ws";
 import { runPaperOnce } from "../../../workers/src/execution/service";
-import { runLiveOnce, runLiveRealtimePositionManagement, settleExpiredLivePositions } from "../../../workers/src/execution/live";
+import { runLiveOnce, settleExpiredLivePositions } from "../../../workers/src/execution/live";
 import {
   closeRunningSessions,
   readRecordControl,
@@ -19,7 +19,6 @@ import { sleep } from "@/lib/binance/rate-limit";
 import { syncLiveOrdersFromVenue, syncLivePositionsFromVenue } from "@/lib/live";
 import { armLiveClaimAfterClose } from "@/lib/live/after-close";
 import { maintainRawData } from "@/lib/ingest/raw-store";
-import { registerLiveRealtimeManagementHandler } from "@/lib/live/realtime-management";
 
 const log = childLogger({ component: "record-loop" });
 
@@ -130,18 +129,6 @@ export async function runRecordLoop(options: { exitOnSignal?: boolean } = {}): P
   }
 
   await writeRecordControl({ pid: process.pid, lastError: null });
-
-  // Price-based LIVE exits are triggered directly by prediction-market WS
-  // updates. This is independent of the slower strategy/record cycle.
-  if (live) {
-    registerLiveRealtimeManagementHandler(async (book) => {
-      const runtime = await ensureLiveRuntime();
-      if (!runtime.ok) return;
-      await runLiveRealtimePositionManagement(book, runtime.ctx, runtime.venue);
-    });
-  } else {
-    registerLiveRealtimeManagementHandler(null);
-  }
 
   void startCollectorsIfNeeded(exitOnSignal).catch((error: unknown) => {
     void rememberError(error, "collectors failed to start");

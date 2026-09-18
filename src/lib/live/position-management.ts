@@ -72,7 +72,7 @@ export function updateLivePositionManagementState(
   return { state, changed, rawPayload: payload as Prisma.InputJsonValue };
 }
 
-export function evaluateLivePositionManagement(options: {
+export function evaluateLivePositionManagement(_options: {
   entryPrice: number;
   currentPrice: number;
   timeToExpirySec: number | null;
@@ -81,80 +81,7 @@ export function evaluateLivePositionManagement(options: {
   state: LivePositionManagementState;
   config?: LivePositionManagementConfig;
 }): LivePositionManagementDecision | null {
-  const {
-    entryPrice,
-    currentPrice,
-    timeToExpirySec,
-    isDownPosition,
-    signal,
-    state,
-  } = options;
-  const config = options.config ?? DEFAULT_LIVE_POSITION_MANAGEMENT;
-
-  if (!(currentPrice >= 0 && currentPrice <= 1)) return null;
-  if (timeToExpirySec == null || timeToExpirySec < config.trailMinTteSec) return null;
-
-  // Hard take-profit: independent of entry price. A 0.03 -> 0.23 trade is
-  // intentionally NOT forced out here; only the universal 0.98+ rule is.
-  if (
-    currentPrice >= config.takeProfitPrice &&
-    timeToExpirySec >= config.takeProfitMinTteSec
-  ) {
-    return {
-      kind: "TAKE_PROFIT",
-      reason: `take-profit: executable price ${currentPrice.toFixed(4)} >= ${config.takeProfitPrice.toFixed(2)} with ${Math.floor(timeToExpirySec)}s to expiry`,
-    };
-  }
-
-  // Trailing protection is deliberately dormant below 0.90 and only arms
-  // after the position has made at least 0.03 in absolute price profit.
-  // The distance expands with price (8% of peak, min 0.05), so volatile
-  // movement around 0.90-0.98 does not close the position on a tiny tick.
-  const trailArmed =
-    state.peakPrice >= config.trailActivationPrice &&
-    state.peakPrice >= entryPrice + config.trailMinProfit;
-  if (trailArmed) {
-    const trailDistance = Math.max(
-      config.trailMinDistance,
-      state.peakPrice * config.trailPercent,
-    );
-    const trailPrice = Math.max(
-      state.peakPrice - trailDistance,
-      entryPrice + config.trailMinProfit,
-    );
-    if (currentPrice <= trailPrice && state.peakPrice - currentPrice >= config.trailMinDistance) {
-      return {
-        kind: "TRAILING_STOP",
-        reason: `trailing protection: peak ${state.peakPrice.toFixed(4)} -> current ${currentPrice.toFixed(4)}, trail ${trailPrice.toFixed(4)}`,
-      };
-    }
-  }
-
-  // Reversal is intentionally much stricter than the normal entry signal.
-  // It only applies while losing, needs enough time left for a new position,
-  // and requires both strong confidence and a meaningful net edge.
-  const oppositeSignal =
-    signal &&
-    ((isDownPosition && signal.direction === "BUY") ||
-      (!isDownPosition && signal.direction === "SELL"));
-  const losing = currentPrice < entryPrice - config.reversalMinLoss;
-  const strong =
-    signal != null &&
-    signal.confidence >= config.reversalMinConfidence &&
-    signal.netEdge >= config.reversalMinNetEdge;
-
-  if (
-    oppositeSignal &&
-    losing &&
-    strong &&
-    timeToExpirySec >= config.reversalMinTteSec
-  ) {
-    return {
-      kind: "STRONG_REVERSAL",
-      reason: `strong reversal: ${isDownPosition ? "UP" : "DOWN"} signal while position is losing; confidence ${signal.confidence.toFixed(2)}, net edge ${signal.netEdge.toFixed(4)}`,
-    };
-  }
-
+  // Live matches Paper: no take-profit, trailing, or strong-reversal exits.
   return null;
 }
 
