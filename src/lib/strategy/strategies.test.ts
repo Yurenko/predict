@@ -22,8 +22,8 @@ function ctx(over: Partial<StrategyContext> = {}): StrategyContext {
     marketProbability: 0.45,
     executableProbability: 0.46,
     lastPrice: 0.99,
-    bestBid: 0.44,
-    bestAsk: 0.46,
+    bestBid: 0.40,
+    bestAsk: 0.42,
     liquidity: 5000,
     spread: 0.02,
     timeToExpirySec: 240,
@@ -111,7 +111,7 @@ describe("spotWindowSide", () => {
     ).toBe("up");
   });
 
-  it("follows the 2m reversal after the window already moved the other way", () => {
+  it("skips a tape reversal that disagrees with the candle vs window open", () => {
     expect(
       spotWindowSide({
         startPrice: 100,
@@ -121,8 +121,8 @@ describe("spotWindowSide", () => {
         minReturn1m: 0.0003,
         timeToExpirySec: 240,
         windowDurationSec: 300,
-      })?.side,
-    ).toBe("down");
+      }),
+    ).toBeNull();
     expect(
       spotWindowSide({
         startPrice: 100,
@@ -132,8 +132,8 @@ describe("spotWindowSide", () => {
         minReturn1m: 0.0003,
         timeToExpirySec: 240,
         windowDurationSec: 300,
-      })?.side,
-    ).toBe("up");
+      }),
+    ).toBeNull();
   });
 
   it("does not let a 1m wick override a 5m candle; 2m tape can", () => {
@@ -157,8 +157,7 @@ describe("spotWindowSide", () => {
       timeToExpirySec: 240,
       windowDurationSec: 300,
     });
-    expect(twoMinuteReversal?.side).toBe("down");
-    expect(twoMinuteReversal?.reason).toMatch(/розворот 2м/);
+    expect(twoMinuteReversal).toBeNull();
   });
 
   it("does not let a 1m wick override a 15m candle; 5m tape can", () => {
@@ -184,8 +183,18 @@ describe("spotWindowSide", () => {
       timeToExpirySec: 600,
       windowDurationSec: 900,
     });
-    expect(fiveMinuteReversal?.side).toBe("down");
-    expect(fiveMinuteReversal?.reason).toMatch(/розворот 5м/);
+    expect(fiveMinuteReversal).toBeNull();
+    const hourReversal = spotWindowSide({
+      startPrice: 100,
+      spot: 100.3,
+      return5m: -0.002,
+      return15m: -0.003,
+      minVsStart: 0.0005,
+      minReturn1m: 0.0003,
+      timeToExpirySec: 2_000,
+      windowDurationSec: 3_600,
+    });
+    expect(hourReversal).toBeNull();
     expect(
       spotWindowSide({
         startPrice: 100,
@@ -199,8 +208,11 @@ describe("spotWindowSide", () => {
     ).toBeNull();
     expect(tapeHorizon(300)).toBe("2m");
     expect(tapeHorizon(900)).toBe("5m");
+    expect(tapeHorizon(3600)).toBe("15m");
+    expect(tapeHorizon(86_400)).toBe("15m");
     expect(tapeLookbackSec("2m")).toBe(120);
     expect(tapeLookbackSec("5m")).toBe(300);
+    expect(tapeLookbackSec("15m")).toBe(900);
   });
 
   it("ignores tape in the last block (2m on 5m markets, 5m on 15m) and stays on the candle", () => {
@@ -284,21 +296,20 @@ describe("spotWindowSide", () => {
       timeToExpirySec: 180,
       windowDurationSec: 300,
     });
-    expect(withTime?.side).toBe("down");
-    expect(withTime?.reason).toMatch(/біля старту/);
+    expect(withTime).toBeNull();
   });
 });
 
 describe("underlying-momentum-lag", () => {
-  const strategy = createMomentumLagStrategy({ safetyMargin: 0 });
+  const strategy = createMomentumLagStrategy({ safetyMargin: 0, minNetEdge: 0, maxNetEdge: 1 });
 
   it("buys Up when spot is above this window start and 2m agrees", () => {
     const signal = strategy.evaluate(
       ctx({
         startPrice: 100,
         underlyingPrice: 100.4,
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.42,
+        bestBid: 0.40,
         lastPrice: 0.99,
         outcomeName: "Up",
         features: { underlyingReturn2m: 0.002 } as StrategyContext["features"],
@@ -315,8 +326,8 @@ describe("underlying-momentum-lag", () => {
         startPrice: 100,
         underlyingPrice: 100.3,
         timeToExpirySec: 90,
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.42,
+        bestBid: 0.40,
         outcomeName: "Up",
         features: { underlyingReturn2m: -0.002 } as StrategyContext["features"],
       }),
@@ -327,13 +338,15 @@ describe("underlying-momentum-lag", () => {
     const flipNearEnd = createMomentumLagStrategy({
       safetyMargin: 0,
       minTimeToExpirySec: 0,
+      minNetEdge: 0,
+      maxNetEdge: 1,
     }).evaluate(
       ctx({
         startPrice: 100,
         underlyingPrice: 100.3,
         timeToExpirySec: 30,
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.42,
+        bestBid: 0.40,
         outcomeName: "Up",
         features: { underlyingReturn2m: -0.002 } as StrategyContext["features"],
       }),
@@ -342,7 +355,7 @@ describe("underlying-momentum-lag", () => {
 
     const liveFlip = createMomentumLagStrategy(
       liveStrategyParams({
-        parameters: { safetyMargin: 0, minTimeToExpirySec: 60 },
+        parameters: { safetyMargin: 0, minTimeToExpirySec: 60, minNetEdge: 0, maxNetEdge: 1 },
         keepSignallingNearExpiry: true,
       }),
     ).evaluate(
@@ -350,8 +363,8 @@ describe("underlying-momentum-lag", () => {
         startPrice: 100,
         underlyingPrice: 99.7,
         timeToExpirySec: 15,
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.62,
+        bestBid: 0.60,
         outcomeName: "Up",
         features: { underlyingReturn2m: 0.002 } as StrategyContext["features"],
       }),
@@ -360,20 +373,19 @@ describe("underlying-momentum-lag", () => {
     expect(liveFlip?.reason).toMatch(/2м розворот ігнор/);
   });
 
-  it("still follows a 2m reversal when there is time left in the 5m window", () => {
+  it("does not emit a 2m reversal against the candle", () => {
     const signal = strategy.evaluate(
       ctx({
         startPrice: 100,
         underlyingPrice: 100.3,
         timeToExpirySec: 180,
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.42,
+        bestBid: 0.40,
         outcomeName: "Up",
         features: { underlyingReturn2m: -0.002 } as StrategyContext["features"],
       }),
     );
-    expect(signal?.direction).toBe("SELL");
-    expect(signal?.reason).toMatch(/розворот 2м/);
+    expect(signal).toBeNull();
   });
 
   it("stays on the 15m candle when only the 1m has reversed", () => {
@@ -383,8 +395,8 @@ describe("underlying-momentum-lag", () => {
         underlyingPrice: 100.3,
         timeToExpirySec: 600,
         windowDurationSec: 900,
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.42,
+        bestBid: 0.40,
         outcomeName: "Up",
         features: {
           underlyingReturn1m: -0.002,
@@ -396,15 +408,15 @@ describe("underlying-momentum-lag", () => {
     expect(signal?.reason).not.toMatch(/розворот 1м/);
   });
 
-  it("follows a 5m reversal on a 15m window", () => {
+  it("does not emit a 5m reversal against a 15m candle", () => {
     const signal = strategy.evaluate(
       ctx({
         startPrice: 100,
         underlyingPrice: 100.3,
         timeToExpirySec: 600,
         windowDurationSec: 900,
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.42,
+        bestBid: 0.40,
         outcomeName: "Up",
         features: {
           underlyingReturn1m: -0.002,
@@ -412,17 +424,16 @@ describe("underlying-momentum-lag", () => {
         } as StrategyContext["features"],
       }),
     );
-    expect(signal?.direction).toBe("SELL");
-    expect(signal?.reason).toMatch(/розворот 5м/);
+    expect(signal).toBeNull();
   });
 
-  it("sells Up (bets Down) when spot is below this window start", () => {
+  it("sells Up (bets Down) when spot is below this window start and Down is cheap", () => {
     const signal = strategy.evaluate(
       ctx({
         startPrice: 100,
         underlyingPrice: 99.6,
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.62,
+        bestBid: 0.60,
         outcomeName: "Up",
         features: { underlyingReturn2m: -0.002 } as StrategyContext["features"],
       }),
@@ -430,19 +441,50 @@ describe("underlying-momentum-lag", () => {
     expect(signal?.direction).toBe("SELL");
   });
 
-  it("rejects a negative edge even when the price is below the buy cap", () => {
-    const strategy = createMomentumLagStrategy({ safetyMargin: 0 });
-    const signal = strategy.evaluate(
+  it("rejects a buy ask above 0.45", () => {
+    const expensive = createMomentumLagStrategy({ safetyMargin: 0, minNetEdge: 0, maxNetEdge: 1 });
+    const signal = expensive.evaluate(
       ctx({
         startPrice: 100,
         underlyingPrice: 100.4,
-        bestAsk: 0.75,
-        bestBid: 0.74,
+        bestAsk: 0.65,
+        bestBid: 0.63,
         outcomeName: "Up",
         features: { underlyingReturn2m: 0.002 } as StrategyContext["features"],
       }),
     );
     expect(signal).toBeNull();
+  });
+
+  it("only signals when net edge is at least 8%", () => {
+    const gated = createMomentumLagStrategy({ safetyMargin: 0, minNetEdge: 0.3 });
+    const loose = createMomentumLagStrategy({ safetyMargin: 0 });
+    const base = {
+      startPrice: 100,
+      underlyingPrice: 100.4,
+      outcomeName: "Up",
+      features: { underlyingReturn2m: 0.002 } as StrategyContext["features"],
+    };
+    expect(gated.evaluate(ctx({ ...base, bestAsk: 0.42, bestBid: 0.4 }))).toBeNull();
+    expect(loose.evaluate(ctx({ ...base, bestAsk: 0.42, bestBid: 0.4 }))?.direction).toBe("BUY");
+  });
+
+  it("needs a clearer 1h move vs open than a 5m wick", () => {
+    const hour = {
+      startPrice: 100,
+      windowDurationSec: 3_600,
+      timeToExpirySec: 2_000,
+      bestAsk: 0.42,
+      bestBid: 0.4,
+      outcomeName: "Up" as const,
+      features: { underlyingReturn15m: 0.002 } as StrategyContext["features"],
+    };
+    expect(
+      strategy.evaluate(ctx({ ...hour, underlyingPrice: 100.05 })),
+    ).toBeNull();
+    expect(
+      strategy.evaluate(ctx({ ...hour, underlyingPrice: 100.12 }))?.direction,
+    ).toBe("BUY");
   });
 
   it("stays flat when the underlying has not left the window open", () => {
@@ -558,8 +600,8 @@ describe("evaluateStrategies", () => {
     const signal = evaluateStrategies(
       strategies,
       ctx({
-        bestAsk: 0.46,
-        bestBid: 0.44,
+        bestAsk: 0.42,
+        bestBid: 0.4,
         lastPrice: 0.99,
         startPrice: 100,
         underlyingPrice: 100.4,

@@ -6,8 +6,8 @@ export default function StrategiesPage() {
       <header className="space-y-2">
         <h1 className="text-3xl font-semibold tracking-tight">Стратегії</h1>
         <p className="max-w-2xl text-sm leading-6 text-zinc-400">
-          Увімкнення пише Strategy.enabled. Перемикач входу: усі стратегії або одна на контракт.
-          Після Старту на Огляді цикл (paper або live) підхопить на наступному кроці.
+          Увімкнення пише Strategy.enabled. Edge min/max у відсотках на картці стратегії — цикл Старт
+          підхопить на наступному кроці, рестарт не потрібен.
         </p>
       </header>
       <StrategiesPanel />

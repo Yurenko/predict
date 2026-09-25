@@ -6,19 +6,22 @@ const strategies = [
   {
     slug: "underlying-momentum-lag",
     kind: StrategyKind.UNDERLYING_MOMENTUM_LAG,
-    name: "Underlying vs window start (5m/15m candle)",
-    version: "0.6.0",
+    name: "Underlying vs window start (5m/15m/1h/1d candle)",
+    version: "0.8.1",
     enabled: false,
     description:
-      "5m/15m Up/Down: if BTC/ETH is below this window's startPrice → Down; above → Up. Recent tape can flip that candle: 2m on 5m markets, 5m on 15m markets. Ignore tape in the last block (2m / 5m). Does not mix 15m lookback into a 5m contract.",
+      "5m/15m/1h/1d Up/Down: spot vs window open. Enter only when signal, candle and LLM agree, ask ≤ 0.55 and net edge ≥ 8%. Exit on take-profit, stop-loss, or candle flip (no LLM wait). Tape against the candle is a skip.",
     parameters: {
       minVsStart: 0.0005,
       minReturn1m: 0.0003,
       minReturn2m: 0.00042,
       minReturn5m: 0.00067,
-      maxBuyAsk: 0.75,
-      minSellBid: 0.25,
+      minReturn15m: 0.00116,
+      maxBuyAsk: 0.55,
+      minSellBid: 0.45,
       minTimeToExpirySec: 60,
+      minNetEdge: 0.08,
+      maxNetEdge: 1,
     },
   },
   {

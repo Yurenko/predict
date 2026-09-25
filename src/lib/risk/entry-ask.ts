@@ -1,5 +1,9 @@
 /** Same cap as underlying-momentum-lag maxBuyAsk. pending_flip must not bypass it. */
-export const DEFAULT_MAX_ENTRY_ASK = 0.75;
+export const DEFAULT_MAX_ENTRY_ASK = 0.55;
+
+export function minSellBidForMaxAsk(maxAsk: number): number {
+  return Math.max(0, Math.min(1, 1 - maxAsk));
+}
 
 export function entryAskAllowed(
   ask: number | null | undefined,

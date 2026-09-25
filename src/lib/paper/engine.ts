@@ -8,6 +8,7 @@ import type { StrategySignal } from "@/lib/types/domain";
 import { simulateFill, type FillOk } from "@/lib/backtest/fills";
 import type { HistoricalQuote } from "@/lib/backtest/types";
 import { evaluateRisk } from "@/lib/risk/evaluate";
+import { entryAskAllowed } from "@/lib/risk/entry-ask";
 import type { RiskDecision, RiskLimits, RiskSnapshot } from "@/lib/risk/types";
 import { paperOrderSide } from "@/lib/paper/action";
 import { clientOrderIdFromKey, paperIdempotencyKey, timeBucket } from "@/lib/paper/idempotency";
@@ -225,8 +226,14 @@ export function executePaperTrade(
     lastPrice: request.book.lastPrice,
     now: request.now,
   });
-  const demoReasons = new Set(["missing_quote", "missing_quote_id", "quote_expired"]);
-  const resolvedQuote =
+  const demoReasons = new Set([
+    "missing_quote",
+    "missing_quote_id",
+    "quote_expired",
+    "fill_is_last_price",
+    "missing_fee_data",
+  ]);
+  let resolvedQuote =
     quoteCheck.ok
       ? quoteCheck
       : demoReasons.has(quoteCheck.reason)
@@ -236,6 +243,19 @@ export function executePaperTrade(
     const status =
       resolvedQuote.reason === "quote_expired" ? OrderStatus.EXPIRED : OrderStatus.FAILED;
     return fail(request, key, status, resolvedQuote.reason, side, false);
+  }
+  if (
+    request.action === "ENTER" &&
+    !entryAskAllowed(resolvedQuote.fillPrice, limits.maxEntryAsk)
+  ) {
+    const bookPx = side === OrderSide.BUY ? request.book.bestAsk : request.book.bestBid;
+    if (entryAskAllowed(bookPx, limits.maxEntryAsk)) {
+      resolvedQuote = {
+        ok: true,
+        fillPrice: bookPx as number,
+        quote: { ...resolvedQuote.quote, averagePrice: bookPx },
+      };
+    }
   }
   const usedDemoBook = !quoteCheck.ok;
 

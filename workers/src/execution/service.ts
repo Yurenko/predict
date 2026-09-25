@@ -38,6 +38,12 @@ import { paperFillReady } from "@/lib/paper/delays";
 import { flattenExpiredPaperPositions } from "@/lib/paper/expiry";
 import { invertBinaryBook, resolveBinaryWorkerTrade } from "@/lib/live/binary";
 import { liveOppositeCloses, liveStrategyParams } from "@/lib/live/binary-mode";
+import { edgeBandFromParams } from "@/lib/strategy/edge-params";
+import {
+  adviseEntryAllowed,
+  adviseHeldPosition,
+  managementCloseSignal,
+} from "@/lib/llm/advise";
 import { outcomeIsDownToken } from "@/lib/normalize/markets";
 import { PAPER_INFLIGHT_STATUSES, reservedLivePositionCount } from "@/lib/live/position-fill";
 import {
@@ -488,7 +494,38 @@ export async function runPaperOnce(): Promise<{
       });
       const strategy = createStrategy(row.slug, params);
       if (!strategy) continue;
-      const signal = strategy.evaluate(ctx);
+      let signal = strategy.evaluate(ctx);
+      let managementExit = false;
+      const edgeBand = edgeBandFromParams(params);
+      const held = openUp ?? openDown;
+      if (held) {
+        const advice = await adviseHeldPosition({
+          positionId: held.id,
+          strategyId: row.slug,
+          marketId: market.id,
+          now,
+          isDown: Boolean(openDown),
+          entryPrice: asNumber(held.avgPrice) ?? 0,
+          ctx,
+          signal,
+          edgeMin: edgeBand.minNetEdge,
+          edgeMax: edgeBand.maxNetEdge,
+        });
+        if (advice.close && advice.reason) {
+          managementExit = true;
+          signal = managementCloseSignal({
+            strategyId: row.slug,
+            marketId: market.id,
+            now,
+            reason: advice.reason,
+            chance: asNumber(latest.chance) ?? asNumber(latest.midPrice),
+          });
+          log.info(
+            { slug: row.slug, market: market.venueMarketId, kind: advice.kind, reason: advice.reason },
+            "paper management close",
+          );
+        }
+      }
       if (pending && shouldCancelPendingFlip(pending.side, signal?.direction)) {
         await clearPendingFlip(row.id, market.id);
         pending = null;
@@ -555,6 +592,13 @@ export async function runPaperOnce(): Promise<{
       const action = trade.paperAction;
       const tokenId = trade.tokenId;
       if (action === "EXIT" && !open) continue;
+      if (action === "EXIT" && !managementExit) {
+        log.info(
+          { slug: row.slug, market: market.venueMarketId, signal: actingSignal.direction },
+          "paper skip signal-only exit: need signal+llm+candle",
+        );
+        continue;
+      }
 
       if (action === "ENTER") {
         const [peerOpen, peerInflight, peerPending] = await Promise.all([
@@ -592,10 +636,26 @@ export async function runPaperOnce(): Promise<{
           );
           continue;
         }
+        const llmEntry = await adviseEntryAllowed({
+          marketId: market.id,
+          proposedDown: trade.invertBook,
+          ctx,
+          netEdge: actingSignal.netEdge,
+          edgeMin: edgeBand.minNetEdge,
+          edgeMax: edgeBand.maxNetEdge,
+        });
+        if (!llmEntry.allow) {
+          log.info(
+            { slug: row.slug, market: market.venueMarketId, reason: llmEntry.reason },
+            "paper llm skipped enter",
+          );
+          continue;
+        }
       }
 
       if (
         oppositeCloses &&
+        !managementExit &&
         action === "EXIT" &&
         signal &&
         (signal.direction === "BUY" || signal.direction === "SELL")

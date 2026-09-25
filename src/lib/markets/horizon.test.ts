@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   cryptoWindowDurationSec,
+  cryptoWindowKind,
+  windowMinVsStart,
   classifyEndDate,
   heldOrTradableMarketWhere,
   isShortCryptoUpDownMarket,
@@ -88,6 +90,11 @@ describe("topic helpers", () => {
         title: "Bitcoin Up or Down - September 16, 2PM-2:15PM ET",
       }),
     ).toBe(900);
+    expect(cryptoWindowKind({ windowDurationSec: 86_400 })).toBe("1d");
+    expect(cryptoWindowKind({ title: "ETH Up or Down 1d" })).toBe("1d");
+    expect(windowMinVsStart("5m")).toBe(0.0005);
+    expect(windowMinVsStart("1h")).toBe(0.0008);
+    expect(windowMinVsStart("1d")).toBe(0.001);
   });
 
   it("dedupes and sorts by endDate", () => {
@@ -127,7 +134,7 @@ describe("topic helpers", () => {
     expect(picked.map((row) => String(row.marketTopicId))).toEqual(["btc5", "eth15"]);
   });
 
-  it("drops 1h/1d, SOL, sports, and stocks even when the cap is empty", () => {
+  it("keeps 1h and 1d, drops SOL, sports, and stocks", () => {
     const picked = pickDiscoveredTopics(
       [
         { marketTopicId: "btc1h", title: "BTC Up or Down 1h", symbol: "BTCUSDT", endDate: at(3600) },
@@ -138,12 +145,12 @@ describe("topic helpers", () => {
       ],
       20,
     );
-    expect(picked.map((row) => String(row.marketTopicId))).toEqual(["bnb15"]);
+    expect(picked.map((row) => String(row.marketTopicId))).toEqual(["bnb15", "btc1h", "eth1d"]);
   });
 });
 
 describe("isShortCryptoUpDownMarket", () => {
-  it("accepts BTC/ETH/BNB 5m and 15m, including long Bitcoin titles", () => {
+  it("accepts BTC/ETH/BNB 5m, 15m, 1h and 1d, including long Bitcoin titles", () => {
     expect(
       isShortCryptoUpDownMarket({
         title: "BTC Up or Down 5m",
@@ -165,15 +172,26 @@ describe("isShortCryptoUpDownMarket", () => {
     ).toBe(true);
     expect(
       isShortCryptoUpDownMarket({
+        title: "BTC Up or Down 1h",
+        symbol: "BTCUSDT",
+      }),
+    ).toBe(true);
+    expect(
+      isShortCryptoUpDownMarket({
+        title: "ETH Up or Down 1d",
+        symbol: "ETHUSDT",
+      }),
+    ).toBe(true);
+    expect(
+      isShortCryptoUpDownMarket({
         title: "Bitcoin Up or Down - September 7, 3AM-3:05AM ET",
         symbol: "BTCUSDT",
       }),
     ).toBe(true);
   });
 
-  it("rejects 1h, 1d, SOL, and non-crypto", () => {
-    expect(isShortCryptoUpDownMarket({ title: "BTC Up or Down 1h", symbol: "BTCUSDT" })).toBe(false);
-    expect(isShortCryptoUpDownMarket({ title: "ETH Up or Down 1d", symbol: "ETHUSDT" })).toBe(false);
+  it("rejects 4h, SOL, and non-crypto", () => {
+    expect(isShortCryptoUpDownMarket({ title: "ETH Up or Down 4h", symbol: "ETHUSDT" })).toBe(false);
     expect(isShortCryptoUpDownMarket({ title: "SOL Up or Down 5m", symbol: "SOLUSDT" })).toBe(false);
     expect(
       isShortCryptoUpDownMarket({
@@ -194,7 +212,7 @@ describe("heldOrTradableMarketWhere", () => {
 });
 
 describe("tradableMarketWhere", () => {
-  it("restricts new entries to BTC/ETH/BNB 5m and 15m", () => {
+  it("restricts new entries to BTC/ETH/BNB 5m, 15m, 1h and 1d", () => {
     const where = tradableMarketWhere(now);
     expect(where.AND).toEqual(
       expect.arrayContaining([

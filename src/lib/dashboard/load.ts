@@ -18,6 +18,7 @@ import { equityCurveFromClosed } from "@/lib/dashboard/equity-curve";
 import { closedExitPrice } from "@/lib/dashboard/exit-price";
 import { lastExecutableSides } from "@/lib/ingest/orderbook-merge";
 import { heldOrTradableMarketQuery, marketHeadline } from "@/lib/markets/horizon";
+import { edgeBandFromParams, netEdgeToPct } from "@/lib/strategy/edge-params";
 import { newerPaperCycle, readPaperCycle, type PaperCycle } from "@/lib/paper/cycle";
 import { DEFAULT_PAPER_ENTRY_MODE } from "@/lib/paper/entry-mode";
 import { DEFAULT_LIVE_BINARY_MODE, readLiveBinaryMode } from "@/lib/live/binary-mode";
@@ -558,14 +559,19 @@ export async function loadDashboard(options: DashboardLoadOptions = {}): Promise
       };
     });
 
-    payload.strategies = strategies.map((row): DashboardStrategy => ({
-      id: row.id,
-      slug: row.slug,
-      name: row.name,
-      kind: row.kind,
-      enabled: row.enabled,
-      description: row.description,
-    }));
+    payload.strategies = strategies.map((row): DashboardStrategy => {
+      const band = edgeBandFromParams(row.parameters);
+      return {
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        kind: row.kind,
+        enabled: row.enabled,
+        description: row.description,
+        minEdgePct: netEdgeToPct(band.minNetEdge),
+        maxEdgePct: netEdgeToPct(band.maxNetEdge),
+      };
+    });
 
     payload.backtests = backtests.map((row): DashboardBacktest => ({
       id: row.id,

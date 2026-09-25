@@ -708,7 +708,7 @@ export function SignalsPanel() {
       <p className="mb-3 max-w-3xl text-xs leading-5 text-zinc-500">
         BUY UP — купівля токена Up. BUY DOWN — купівля токена Down (сигнал SELL). EXIT BUY / EXIT SELL —
         повний продаж того токена. Стратегія не чіпає чужі позиції. LIVE як Paper: протилежний сигнал
-        спочатку закриває ногу; інша сторона — лише якщо новий evaluate все ще хоче вхід і ask ≤ 0.75.
+        спочатку закриває ногу; інша сторона — лише якщо новий evaluate все ще хоче вхід і ask ≤ 0.55.
         Без свіжого сигналу pending_flip більше не купує.
       </p>
       <div className="mb-4">
@@ -748,11 +748,11 @@ export function MarketsPanel() {
   const { data, error, loading } = useDashboard();
   if (!data) return <Banner error={error} loading={loading} data={data} />;
   return (
-    <Card title="Ринки · BTC/ETH/BNB 5m і 15m · bid/ask executable">
+    <Card title="Ринки · BTC/ETH/BNB 5m / 15m / 1h / 1d · bid/ask executable">
       <PaperBanner data={data} />
       <Table
         columns={["Ринок", "До кінця", "Symbol", "Bid", "Ask", "lastPrice (істор.)", "Chance", "Liq", "Книга"]}
-        empty="Немає BTC/ETH/BNB 5m або 15m Up/Down у вікні до експірі. 1h/1d, SOL і спорт сюди не потрапляють."
+        empty="Немає BTC/ETH/BNB 5m, 15m, 1h або 1d Up/Down у вікні до експірі. SOL і спорт сюди не потрапляють."
         rows={data.markets.map((row) => [
           <span key="t">
             {row.title}
@@ -886,11 +886,11 @@ export function StrategiesPanel() {
   const { data, error, loading, setData } = useDashboard();
   if (!data) return <Banner error={error} loading={loading} data={data} />;
 
-  async function toggle(slug: string, enabled: boolean) {
+  async function patchStrategy(body: Record<string, unknown>) {
     const response = await fetch("/api/dashboard/strategies", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ slug, enabled }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) return;
     setData((await response.json()) as DashboardPayload);
@@ -901,13 +901,11 @@ export function StrategiesPanel() {
       <p className="mb-4 text-xs text-zinc-500">
         Увімкнені стратегії торгують після Старт на Огляді: у paper — віртуальний bankroll, у LIVE —
         реальний placeOrder. Режим задає команда запуску (`npm run dev` або `npm run dev:live`), не
-        цей екран. Underlying vs window start: свічка 5m/15m відносно свого open (startPrice). Нижче
-        старту → Down, вище → Up. Свіжа стрічка може перевернути сторону: 2м на 5м ринку, 5м на 15м.
-        В кінці вікна стрічку ігноруємо на довжину того ж блока (2 хв / 5 хв). Не змішуємо старий 15м lookback у 5м контракт.
-        На одному вікні — одна стратегія. Протилежний сигнал спочатку закриває ногу, інша сторона
-        відкривається після CLOSED. Paper тепер як Live: ордер спочатку SUBMITTED, філ з затримкою;
-        після експірі слот звільняється одразу, 0/1 приходить пізніше. Claim у Live не блокує нові
-        входи.
+        цей екран. Underlying vs window start: свічка 5m/15m/1h/1d відносно свого open (startPrice). Нижче
+        старту → Down, вище → Up. Вхід лише якщо сигнал, свічка і LLM збігаються і ask ≤ 0.55. Вихід:
+        тейк, стоп або свічка проти ноги (без LLM). Edge min/max
+        нижче — у відсотках, наступний цикл Старт підхопить без рестарту. За замовчуванням від 8%, max
+        100% = без стелі.
       </p>
       <div className="space-y-3">
         {data.strategies.length === 0 ? (
@@ -916,18 +914,26 @@ export function StrategiesPanel() {
           data.strategies.map((row) => (
             <div
               key={row.slug}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 px-3 py-3"
+              className="flex flex-wrap items-end justify-between gap-3 rounded-xl border border-zinc-800 px-3 py-3"
             >
-              <div>
+              <div className="min-w-[16rem] flex-1">
                 <p className="text-sm text-zinc-100">{row.name}</p>
                 <p className="text-xs text-zinc-500">{row.slug}</p>
                 {row.description ? (
                   <p className="mt-1 max-w-xl text-xs text-zinc-500">{row.description}</p>
                 ) : null}
+                <EdgeBandFields
+                  slug={row.slug}
+                  minEdgePct={row.minEdgePct}
+                  maxEdgePct={row.maxEdgePct}
+                  onSave={(minEdgePct, maxEdgePct) =>
+                    void patchStrategy({ slug: row.slug, minEdgePct, maxEdgePct })
+                  }
+                />
               </div>
               <button
                 type="button"
-                onClick={() => void toggle(row.slug, !row.enabled)}
+                onClick={() => void patchStrategy({ slug: row.slug, enabled: !row.enabled })}
                 className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
               >
                 {row.enabled ? "Вимкнути" : "Увімкнути"}
@@ -937,6 +943,65 @@ export function StrategiesPanel() {
         )}
       </div>
     </Card>
+  );
+}
+
+function EdgeBandFields({
+  slug,
+  minEdgePct,
+  maxEdgePct,
+  onSave,
+}: {
+  slug: string;
+  minEdgePct: number;
+  maxEdgePct: number;
+  onSave: (minEdgePct: number, maxEdgePct: number) => void;
+}) {
+  const [minPct, setMinPct] = useState(String(minEdgePct));
+  const [maxPct, setMaxPct] = useState(String(maxEdgePct));
+  useEffect(() => {
+    setMinPct(String(minEdgePct));
+    setMaxPct(String(maxEdgePct));
+  }, [slug, minEdgePct, maxEdgePct]);
+  return (
+    <form
+      className="mt-3 flex flex-wrap items-end gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave(Number(minPct), Number(maxPct));
+      }}
+    >
+      <label className="text-xs text-zinc-500">
+        Edge min %
+        <input
+          type="number"
+          min={0}
+          max={100}
+          step={0.5}
+          value={minPct}
+          onChange={(event) => setMinPct(event.target.value)}
+          className="mt-1 block w-24 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100"
+        />
+      </label>
+      <label className="text-xs text-zinc-500">
+        Edge max %
+        <input
+          type="number"
+          min={0}
+          max={100}
+          step={0.5}
+          value={maxPct}
+          onChange={(event) => setMaxPct(event.target.value)}
+          className="mt-1 block w-24 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100"
+        />
+      </label>
+      <button
+        type="submit"
+        className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+      >
+        Зберегти edge
+      </button>
+    </form>
   );
 }
 

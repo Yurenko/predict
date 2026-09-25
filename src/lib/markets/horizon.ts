@@ -112,11 +112,47 @@ function isShortCryptoAsset(text: string, symbol?: string | null): boolean {
     /BNBUSDT|\bBNB\b/i.test(text));
 }
 
+export type CryptoWindowKind = "5m" | "15m" | "1h" | "1d";
+
+/** 1h/1d need a clearer move vs open than a 5m wick. */
+export function windowMinVsStart(kind: CryptoWindowKind | null | undefined): number {
+  if (kind === "1d") return 0.001;
+  if (kind === "1h") return 0.0008;
+  if (kind === "15m") return 0.0008;
+  return 0.0005;
+}
+
 function isShortCryptoWindow(text: string): boolean {
-  if (/\b(1h|1d|4h|1m)\b/i.test(text)) return false;
-  if (/\b15m\b/i.test(text) || /\b5m\b/i.test(text)) return true;
+  if (/\b4h\b/i.test(text)) return false;
+  if (
+    /\b1d\b/i.test(text) ||
+    /\b1h\b/i.test(text) ||
+    /\b15m\b/i.test(text) ||
+    /\b5m\b/i.test(text)
+  ) {
+    return true;
+  }
   const minutes = minutesBetweenClockRange(text);
-  return minutes === 5 || minutes === 15;
+  return minutes === 5 || minutes === 15 || minutes === 60 || minutes === 1_440;
+}
+
+export function cryptoWindowKind(options: {
+  windowDurationSec?: number | null;
+  title?: string | null;
+}): CryptoWindowKind | null {
+  const sec = options.windowDurationSec;
+  if (sec != null && sec > 0) {
+    if (sec <= 450) return "5m";
+    if (sec <= 1_800) return "15m";
+    if (sec <= 5_400) return "1h";
+    if (sec <= 108_000) return "1d";
+  }
+  const text = options.title ?? "";
+  if (/\b1d\b/i.test(text) || minutesBetweenClockRange(text) === 1_440) return "1d";
+  if (/\b1h\b/i.test(text) || minutesBetweenClockRange(text) === 60) return "1h";
+  if (/\b15m\b/i.test(text) || minutesBetweenClockRange(text) === 15) return "15m";
+  if (/\b5m\b/i.test(text) || minutesBetweenClockRange(text) === 5) return "5m";
+  return null;
 }
 
 /** 5m vs 15m contract length. Prefer start/end dates; fall back to "2PM-2:15PM" in the title. */
@@ -142,10 +178,15 @@ export function cryptoWindowDurationSec(options: {
   }
   const minutes = minutesBetweenClockRange(options.title ?? "");
   if (minutes != null && minutes > 0) return minutes * 60;
+  const title = options.title ?? "";
+  if (/\b1d\b/i.test(title)) return 86_400;
+  if (/\b1h\b/i.test(title)) return 3_600;
+  if (/\b15m\b/i.test(title)) return 900;
+  if (/\b5m\b/i.test(title)) return 300;
   return null;
 }
 
-/** BTC / ETH / BNB Up or Down 5m and 15m only — not 1h/1d, SOL, sports, or stocks. */
+/** BTC / ETH / BNB Up or Down 5m, 15m, 1h and 1d — not 4h, SOL, sports, or stocks. */
 export function isShortCryptoUpDownMarket(topic: ListedTopicLike): boolean {
   const text = topicSearchText(topic);
   if (!text) return false;
@@ -183,23 +224,27 @@ export function shortCryptoUpDownMarketWhere(): Prisma.MarketWhereInput {
   const windowOr: Prisma.MarketWhereInput[] = [
     { topic: { title: { contains: "5m", mode: "insensitive" } } },
     { topic: { title: { contains: "15m", mode: "insensitive" } } },
+    { topic: { title: { contains: "1h", mode: "insensitive" } } },
+    { topic: { title: { contains: "1d", mode: "insensitive" } } },
     { title: { contains: "5m", mode: "insensitive" } },
     { title: { contains: "15m", mode: "insensitive" } },
+    { title: { contains: "1h", mode: "insensitive" } },
+    { title: { contains: "1d", mode: "insensitive" } },
   ];
   return {
-    AND: [
-      { OR: assetOr },
-      { OR: windowOr },
-      { NOT: { topic: { title: { contains: "1h", mode: "insensitive" } } } },
-      { NOT: { topic: { title: { contains: "1d", mode: "insensitive" } } } },
-    ],
+    AND: [{ OR: assetOr }, { OR: windowOr }],
   };
 }
 
-/** Lower is better: BTC/ETH/BNB 5m before 15m. */
+/** Lower is better: 5m before 15m before 1h before 1d. */
 export function cryptoUpDownPriority(topic: ListedTopicLike): number {
   if (!isShortCryptoUpDownMarket(topic)) return 100;
-  return /\b5m\b/i.test(topicSearchText(topic)) ? 0 : 1;
+  const text = topicSearchText(topic);
+  if (/\b5m\b/i.test(text)) return 0;
+  if (/\b15m\b/i.test(text)) return 1;
+  if (/\b1h\b/i.test(text)) return 2;
+  if (/\b1d\b/i.test(text)) return 3;
+  return 4;
 }
 
 export function pickDiscoveredTopics<T extends ListedTopicLike>(

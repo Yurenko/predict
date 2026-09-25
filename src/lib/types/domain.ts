@@ -38,7 +38,7 @@ export interface StrategyContext {
   liquidity: number | null;
   spread: number | null;
   timeToExpirySec: number | null;
-  /** Length of this Up/Down window (5m ≈ 300s, 15m ≈ 900s). */
+  /** Length of this Up/Down window (5m ≈ 300s, 15m ≈ 900s, 1h ≈ 3600s, 1d ≈ 86400s). */
   windowDurationSec: number | null;
   underlyingSymbol: string | null;
   underlyingPrice: number | null;

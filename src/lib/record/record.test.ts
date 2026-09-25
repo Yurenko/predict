@@ -191,7 +191,7 @@ describe("hypotheticalSignals", () => {
       rollingWindow: 60,
     });
     const signals = hypotheticalSignals(context, [
-      { slug: "underlying-momentum-lag", strategy: createMomentumLagStrategy({ minUnderlyingMove: 0.001, minNetEdge: 0.01 }) },
+      { slug: "underlying-momentum-lag", strategy: createMomentumLagStrategy({ minUnderlyingMove: 0.001, minNetEdge: 0.01, maxNetEdge: 1 }) },
     ]);
     expect(context.features.underlyingReturn1m).not.toBeNull();
     expect(context.quote).toBeNull();

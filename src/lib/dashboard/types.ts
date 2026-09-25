@@ -121,6 +121,8 @@ export interface DashboardStrategy {
   kind: string;
   enabled: boolean;
   description: string | null;
+  minEdgePct: number;
+  maxEdgePct: number;
 }
 
 export interface DashboardBacktest {

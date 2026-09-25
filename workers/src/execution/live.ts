@@ -35,11 +35,17 @@ import {
 } from "@/lib/live";
 import { invertBinaryBook, resolveBinaryWorkerTrade } from "@/lib/live/binary";
 import {
+  adviseEntryAllowed,
+  adviseHeldPosition,
+  managementCloseSignal,
+} from "@/lib/llm/advise";
+import {
   liveOppositeCloses,
   liveStrategyParams,
   readLiveBinaryMode,
   shouldBlockLiveFlipEnter,
 } from "@/lib/live/binary-mode";
+import { edgeBandFromParams } from "@/lib/strategy/edge-params";
 import { outcomeIsDownToken } from "@/lib/normalize/markets";
 import { quoteLiveExitSell } from "@/lib/live/exit-quote";
 import { exitIntentFromOutcome } from "@/lib/live/intent-label";
@@ -573,7 +579,38 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
       });
       const strategy = createStrategy(row.slug, params);
       if (!strategy) continue;
-      const signal = strategy.evaluate(ctxStrategy);
+      let signal = strategy.evaluate(ctxStrategy);
+      let managementExit = false;
+      const edgeBand = edgeBandFromParams(params);
+      const held = openUp ?? openDown;
+      if (held) {
+        const advice = await adviseHeldPosition({
+          positionId: held.id,
+          strategyId: row.slug,
+          marketId: market.id,
+          now,
+          isDown: Boolean(openDown),
+          entryPrice: asNumber(held.avgPrice) ?? 0,
+          ctx: ctxStrategy,
+          signal,
+          edgeMin: edgeBand.minNetEdge,
+          edgeMax: edgeBand.maxNetEdge,
+        });
+        if (advice.close && advice.reason) {
+          managementExit = true;
+          signal = managementCloseSignal({
+            strategyId: row.slug,
+            marketId: market.id,
+            now,
+            reason: advice.reason,
+            chance: asNumber(tick.chance) ?? asNumber(tick.midPrice),
+          });
+          log.info(
+            { slug: row.slug, market: market.venueMarketId, kind: advice.kind, reason: advice.reason },
+            "live management close",
+          );
+        }
+      }
 
       if (pending && shouldCancelPendingFlip(pending.side, signal?.direction)) {
         log.info(
@@ -678,6 +715,14 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
         skips.hold += 1;
         continue;
       }
+      if (action === "EXIT" && !managementExit) {
+        log.info(
+          { slug: row.slug, market: market.venueMarketId, signal: actingSignal.direction },
+          "live skip signal-only exit: need signal+llm+candle",
+        );
+        skips.hold += 1;
+        continue;
+      }
 
       if (action === "ENTER" && !isShortCryptoUpDownRow(market)) {
         skips.enter += 1;
@@ -720,11 +765,28 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           skips.peer += 1;
           continue;
         }
+        const llmEntry = await adviseEntryAllowed({
+          marketId: market.id,
+          proposedDown: trade.invertBook,
+          ctx: ctxStrategy,
+          netEdge: actingSignal.netEdge,
+          edgeMin: edgeBand.minNetEdge,
+          edgeMax: edgeBand.maxNetEdge,
+        });
+        if (!llmEntry.allow) {
+          log.info(
+            { slug: row.slug, market: market.venueMarketId, reason: llmEntry.reason },
+            "live llm skipped enter",
+          );
+          skips.enter += 1;
+          continue;
+        }
       }
 
       let flipWanted: PendingFlipSide | null = null;
       if (
         oppositeCloses &&
+        !managementExit &&
         action === "EXIT" &&
         signal &&
         (signal.direction === "BUY" || signal.direction === "SELL")
@@ -741,7 +803,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           });
         }
       }
-      const recoverSide = flipWanted ?? pending?.side ?? null;
+      const recoverSide = managementExit ? null : (flipWanted ?? pending?.side ?? null);
 
       const upBook =
         action === "EXIT" && !freshLive
@@ -784,7 +846,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
           if (
             shouldRecoverFlipEnter({
               wantedSide: recoverSide,
-              managementExit: false,
+              managementExit,
               venueShares: exitShares,
             }) &&
             recoverSide
@@ -972,7 +1034,7 @@ export async function runLiveOnce(ctx: LiveTradeContext, venue: OfficialPredicti
             shouldConfirmFlipExit({
               oppositeCloses,
               exitPlaced: true,
-              managementExit: false,
+              managementExit,
               wantedSide: recoverSide,
             }) &&
             recoverSide

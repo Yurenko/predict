@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import type { StrategySignal } from "@/lib/types/domain";
+import { shouldStopLoss, shouldTakeProfit, stopLossReason, takeProfitReason } from "@/lib/live/take-profit";
 
 export interface LivePositionManagementConfig {
   takeProfitPrice: number;
@@ -16,8 +17,8 @@ export interface LivePositionManagementConfig {
 }
 
 export const DEFAULT_LIVE_POSITION_MANAGEMENT: LivePositionManagementConfig = {
-  takeProfitPrice: 0.98,
-  takeProfitMinTteSec: 60,
+  takeProfitPrice: 0.45,
+  takeProfitMinTteSec: 30,
   trailActivationPrice: 0.90,
   trailMinDistance: 0.05,
   trailPercent: 0.08,
@@ -35,7 +36,7 @@ export type LivePositionManagementState = {
 };
 
 export type LivePositionManagementDecision = {
-  kind: "TAKE_PROFIT" | "TRAILING_STOP" | "STRONG_REVERSAL";
+  kind: "TAKE_PROFIT" | "STOP_LOSS" | "TRAILING_STOP" | "STRONG_REVERSAL";
   reason: string;
 };
 
@@ -72,7 +73,7 @@ export function updateLivePositionManagementState(
   return { state, changed, rawPayload: payload as Prisma.InputJsonValue };
 }
 
-export function evaluateLivePositionManagement(_options: {
+export function evaluateLivePositionManagement(options: {
   entryPrice: number;
   currentPrice: number;
   timeToExpirySec: number | null;
@@ -81,7 +82,36 @@ export function evaluateLivePositionManagement(_options: {
   state: LivePositionManagementState;
   config?: LivePositionManagementConfig;
 }): LivePositionManagementDecision | null {
-  // Live matches Paper: no take-profit, trailing, or strong-reversal exits.
+  void options.isDownPosition;
+  void options.signal;
+  void options.state;
+  const config = options.config ?? DEFAULT_LIVE_POSITION_MANAGEMENT;
+  if (
+    shouldTakeProfit({
+      entryPrice: options.entryPrice,
+      currentPrice: options.currentPrice,
+      timeToExpirySec: options.timeToExpirySec,
+      takeProfitMark: config.takeProfitPrice,
+      takeProfitMinDelta: 0.2,
+      minTteSec: config.takeProfitMinTteSec,
+    })
+  ) {
+    return {
+      kind: "TAKE_PROFIT",
+      reason: takeProfitReason(options.entryPrice, options.currentPrice),
+    };
+  }
+  if (
+    shouldStopLoss({
+      entryPrice: options.entryPrice,
+      currentPrice: options.currentPrice,
+    })
+  ) {
+    return {
+      kind: "STOP_LOSS",
+      reason: stopLossReason(options.entryPrice, options.currentPrice),
+    };
+  }
   return null;
 }
 

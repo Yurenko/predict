@@ -75,7 +75,11 @@ npm run worker:observe        # health / alerts / metrics snapshot
 | `LIVE_TRADING_ENABLED` | `false` | Локально `npm run dev` форсить PAPER, `npm run dev:live` — LIVE |
 | `TRADING_MODE` | `PAPER` | Потрібні обидва: `true` + `LIVE` (ставить `dev:live`) |
 | `BINANCE_PAPER_API_KEY` | порожньо | Тільки сервер |
-| `BINANCE_LIVE_API_KEY` | порожньо | Окремі credentials від paper |
+| `MAX_ENTRY_ASK` | `0.55` | Не купувати токен дорожче 55¢ (0.65–0.75 як раніше — ні; стоп ріже лузера) |
+| `TAKE_PROFIT_MARK` | `0.45` | Закрити, коли executable mark ≈ скрін (0.13→0.47) |
+| `STOP_LOSS_DELTA` / `STOP_LOSS_MARK` | `0.15` / `0.25` | Різати лузера: −15¢ від входу або mark ≤ 0.25 (дешеві 0.13 не чіпає) |
+| `LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | Локальна Ollama, без ключа. Модель `llama3.1:8b` |
+| `EDGE_MIN` / `EDGE_MAX` | `0.08` / `1` | Мін. 8% edge, max 100% = без стелі. На дашборді Стратегії можна змінити |
 
 Секрети Binance ніколи не віддаються в браузер.
 

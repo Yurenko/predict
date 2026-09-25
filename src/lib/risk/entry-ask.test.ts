@@ -6,11 +6,11 @@ import {
 } from "./entry-ask";
 
 describe("entry ask cap", () => {
-  it("matches the strategy maxBuyAsk of 0.75", () => {
-    expect(DEFAULT_MAX_ENTRY_ASK).toBe(0.75);
-    expect(entryAskAllowed(0.75)).toBe(true);
-    expect(entryAskAllowed(0.751)).toBe(false);
-    expect(entryAskAllowed(0.85)).toBe(false);
+  it("matches the strategy maxBuyAsk of 0.55", () => {
+    expect(DEFAULT_MAX_ENTRY_ASK).toBe(0.55);
+    expect(entryAskAllowed(0.55)).toBe(true);
+    expect(entryAskAllowed(0.551)).toBe(false);
+    expect(entryAskAllowed(0.75)).toBe(false);
     expect(entryAskAllowed(0.32)).toBe(true);
     expect(entryAskAllowed(null)).toBe(false);
   });

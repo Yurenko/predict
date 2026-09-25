@@ -118,6 +118,11 @@ export function RecordControls() {
           </p>
         )}
         <p className="text-xs leading-5 text-zinc-500">
+          Ринок: BTC/ETH/BNB Up/Down 5m, 15m, 1h і 1d. Вхід лише коли сигнал, свічка і LLM
+          збігаються, ask ≤ 0.55 і edge від 8%. Вихід: тейк (mark ≥ 0.45 і +0.20), стоп (mark ≤ entry−0.15
+          або нижче 0.25) або свічка проти позиції — без очікування LLM.
+        </p>
+        <p className="text-xs leading-5 text-zinc-500">
           Дивіться вкладки Сигнали, Ордери і Позиції. FAILED з причиною missing_quote / no_executable_book
           — це теж «як працює»: спроба була, філ без офіційного getQuote не симулюємо.
         </p>

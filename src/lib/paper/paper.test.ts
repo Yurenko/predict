@@ -205,6 +205,27 @@ describe("executePaperTrade", () => {
     expect(result.fill?.notional).toBeGreaterThan(0);
   });
 
+  it("uses the book when the quote is lastPrice or above the entry cap", () => {
+    const tight: RiskLimits = { ...lim, maxEntryAsk: 0.55 };
+    const fromLast = executePaperTrade(
+      request({ quote: quote({ averagePrice: 0.99 }) }),
+      emptyRiskSnapshot(tight),
+      tight,
+    );
+    expect(fromLast.status).toBe(OrderStatus.FILLED);
+    expect(fromLast.fill?.price).toBeCloseTo(0.46);
+    const fromHigh = executePaperTrade(
+      request({
+        quote: quote({ averagePrice: 0.7, lastPrice: 0.99 }),
+        now: new Date("2026-01-01T00:00:06.000Z"),
+      }),
+      emptyRiskSnapshot(tight),
+      tight,
+    );
+    expect(fromHigh.status).toBe(OrderStatus.FILLED);
+    expect(fromHigh.fill?.price).toBeCloseTo(0.46);
+  });
+
   it("still fills PAPER when the book is older than staleMs", () => {
     const result = executePaperTrade(
       request({ book: { ...request().book, dataAgeMs: 20_000 } }),

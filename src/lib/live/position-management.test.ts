@@ -34,30 +34,34 @@ const base = {
 };
 
 describe("live position management", () => {
-  it("does not take profit, trail, or reverse — Live holds like Paper", () => {
+  it("takes profit on a cheap entry marked around 0.45+", () => {
     expect(
       evaluateLivePositionManagement({
         ...base,
-        entryPrice: 0.02,
-        currentPrice: 0.98,
+        entryPrice: 0.13,
+        currentPrice: 0.47,
+        signal: null,
+      })?.kind,
+    ).toBe("TAKE_PROFIT");
+    expect(
+      evaluateLivePositionManagement({
+        ...base,
+        entryPrice: 0.6,
+        currentPrice: 0.62,
         signal: null,
       }),
     ).toBeNull();
+  });
+
+  it("stops an expensive Up that dropped through 0.25", () => {
     expect(
       evaluateLivePositionManagement({
         ...base,
-        currentPrice: 0.86,
-        state: { peakPrice: 0.94, peakAt: new Date().toISOString() },
+        entryPrice: 0.65,
+        currentPrice: 0.24,
         signal: null,
-      }),
-    ).toBeNull();
-    expect(
-      evaluateLivePositionManagement({
-        ...base,
-        currentPrice: 0.58,
-        signal: signal({ confidence: 0.7, netEdge: 0.05 }),
-      }),
-    ).toBeNull();
+      })?.kind,
+    ).toBe("STOP_LOSS");
   });
 
   it("persists and only advances the peak", () => {

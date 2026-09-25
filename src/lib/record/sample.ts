@@ -50,6 +50,7 @@ async function loadStrategies(): Promise<Array<{ slug: string; strategy: Strateg
     return loadResearchStrategies().map((strategy) => ({ slug: strategy.id, strategy }));
   }
   return rows.flatMap((row) => {
+    if (!row.enabled) return [];
     const params = (row.parameters ?? {}) as Record<string, unknown>;
     const strategy = createStrategy(row.slug, params);
     return strategy ? [{ slug: row.slug, strategy }] : [];
